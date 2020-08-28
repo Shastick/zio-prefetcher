@@ -1,4 +1,4 @@
-package com.github.Shastick.prefetcher
+package ch.j3t.prefetcher
 
 import zio.duration.{ Duration, _ }
 import zio.logging._
