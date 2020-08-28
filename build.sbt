@@ -46,7 +46,7 @@ lazy val settings =
 lazy val commonSettings =
   Seq(
     name := "zio-prefetcher",
-    scalaVersion := "2.13.1",
+    scalaVersion := "2.13.3",
     organization := "ch.j3t",
     organizationName := "j3t",
     homepage := Some(url("https://github.com/Shastick/zio-prefetcher/")),

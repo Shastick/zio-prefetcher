@@ -11,7 +11,8 @@ A prefetcher is something that will do some work _in advance_ of when it is need
 Hence, the time it takes to access pre-fetched things is entirely predictable. Think of a prefetcher as a `Supplier[T]` 
 that returns a `T` immediately while regulary refreshing itself in the background  
 
-Note that it is _slightly_ different from a cache.
+Note that it is _slightly_ different from a cache. Please refer to [this blog post](https://j3t.ch/tech/prefetching-pattern/) for some further context.
+
 
 ## How To Use
 
@@ -31,6 +32,10 @@ for {
 
 
 ```
+
+This library is built against `zio` version `1.0.1` and `zio-logging` version `0.4.0` but expects you to provide `zio` and `zio-logging` at runtime. At the moment only Scala 2.13 is supported.
+
+See [here](https://search.maven.org/search?q=g:ch.j3t%20AND%20a:zio-prefetcher_2.13) for the latest version.
 
 ## Example use cases
 
