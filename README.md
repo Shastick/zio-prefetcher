@@ -33,9 +33,15 @@ for {
 
 ```
 
-This library is built against `zio` version `1.0.1` and `zio-logging` version `0.4.0` but expects you to provide `zio` and `zio-logging` at runtime. At the moment only Scala 2.13 is supported.
+The artifact coordinates are:
 
-See [here](https://search.maven.org/search?q=g:ch.j3t%20AND%20a:zio-prefetcher_2.13) for the latest version.
+```
+libraryDependencies += "ch.j3t" %% "zio-prefetcher" % version
+```
+
+[Check over here for all available versions](https://mvnrepository.com/artifact/ch.j3t/zio-prefetcher)
+
+This library is built against `zio` version `1.0.1` and `zio-logging` version `0.4.0` but expects you to provide `zio` and `zio-logging` at runtime. At the moment only Scala 2.13 is supported.
 
 ## Example use cases
 

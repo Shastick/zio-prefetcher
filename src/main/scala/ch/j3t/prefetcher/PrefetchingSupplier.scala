@@ -12,7 +12,7 @@ import zio._
  * @param updateFiber the fiber running the regular update job
  * @tparam T the type of the pre-fetched value
  */
-private[prefetcher] class PrefetchingSupplier[T](
+class PrefetchingSupplier[T] private (
   prefetchedValueRef: Ref[T],
   val updateFiber: Fiber[Throwable, Any]
 ) {
