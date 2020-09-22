@@ -19,6 +19,8 @@ class PrefetchingSupplier[T] private (
 
   val currentValueRef = prefetchedValueRef.readOnly
 
+  val get = prefetchedValueRef.get
+
 }
 
 object PrefetchingSupplier {
@@ -38,9 +40,9 @@ object PrefetchingSupplier {
    * @param initialWait    time to wait before launching the regular updated job
    * @tparam T the type that will be held by this prefetching supplier
    */
-  def withInitialValue[T](
+  def withInitialValue[T: Tag](
     initialValue: T,
-    supplier: ZIO[T, Throwable, T],
+    supplier: ZIO[Has[T], Throwable, T],
     updateInterval: Duration,
     initialWait: Duration = 0.seconds
   ) =
@@ -56,23 +58,27 @@ object PrefetchingSupplier {
    *
    * Once the prefetcher is instantiated, it will contain a pre-fetched value.
    */
-  def withInitialFetch[T](zero: T, supplier: ZIO[T, Throwable, T], updateInterval: Duration) =
+  def withInitialFetch[T: Tag](
+    zero: T,
+    supplier: ZIO[ZEnv with Has[T], Throwable, T],
+    updateInterval: Duration
+  ) =
     for {
-      initialValue          <- supplier.provide(zero)
-      refWithInitialContent <- Ref.make(initialValue)
-      updateFiber           <- scheduleUpdateWithInitialDelay(refWithInitialContent, supplier, updateInterval).fork
+      initialValue          <- supplier.provideCustomLayer(ZLayer.succeed(zero))
+      refWithInitialContent <- Ref.make[T](initialValue)
+      updateFiber           <- scheduleUpdateWithInitialDelay[T](refWithInitialContent, supplier, updateInterval).fork
     } yield new PrefetchingSupplier(refWithInitialContent, updateFiber)
 
-  private def updatePrefetchedValueRef[T](
+  private def updatePrefetchedValueRef[T: Tag](
     valueRef: Ref[T],
-    valueSupplier: ZIO[T, Throwable, T]
+    valueSupplier: ZIO[ZEnv with Has[T], Throwable, T]
   ) =
     for {
       _ <- log.info("Running supplier to updated pre-fetched value...")
       // TODO we probably want to keep track of how much time goes by here
       previousVal <- valueRef.get
       newVal <- valueSupplier
-                  .provide(previousVal)
+                  .provideCustomLayer(ZLayer.succeed(previousVal))
                   .onError(err =>
                     // Error output pretty ugly.
                     log.error(
@@ -84,9 +90,9 @@ object PrefetchingSupplier {
       _ <- log.debug("Successfully update pre-fetched value.")
     } yield ()
 
-  private def scheduleUpdate[T](
+  private def scheduleUpdate[T: Tag](
     valueRef: Ref[T],
-    supplier: ZIO[T, Throwable, T],
+    supplier: ZIO[ZEnv with Has[T], Throwable, T],
     updateInterval: Duration,
     initialWait: Duration
   ) =
@@ -94,9 +100,9 @@ object PrefetchingSupplier {
       .retry(Schedule.spaced(updateInterval))
       .repeat(Schedule.spaced(updateInterval))
 
-  private def scheduleUpdateWithInitialDelay[T](
+  private def scheduleUpdateWithInitialDelay[T: Tag](
     valueRef: Ref[T],
-    supplier: ZIO[T, Throwable, T],
+    supplier: ZIO[ZEnv with Has[T], Throwable, T],
     updateInterval: Duration
   ) =
     ZIO.sleep(updateInterval) *> scheduleUpdate(valueRef, supplier, updateInterval, Duration.Zero)

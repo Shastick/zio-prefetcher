@@ -1,11 +1,12 @@
 package ch.j3t.prefetcher
 
-import zio.ZIO
+import zio.{ Has, ZIO }
 import zio.logging.Logging
 import zio.test.Assertion.equalTo
 import zio.test.environment.TestClock
 import zio.test.{ assert, suite, testM, DefaultRunnableSpec }
 import zio.duration._
+import zio.blocking._
 
 object PrefetchingSupplierSpec extends DefaultRunnableSpec {
 
@@ -24,8 +25,8 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
     },
     testM("The clean counter-incrementing effect works as expected")(
       for {
-        v1 <- incrementer.provide(-1)
-        v2 <- incrementer.provide(v1)
+        v1 <- incrementer.provide(Has(-1))
+        v2 <- incrementer.provide(Has(v1))
       } yield assert(v1)(equalTo(0)) && assert(v2)(equalTo(1))
     ),
     testM("Correctly update the pre-fetched ref")(
@@ -93,10 +94,23 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       } yield assert(immediatelyHeld)(equalTo(0)) &&
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2))
+    },
+    testM("Correctly work from a supplier that relies on the ZEnv") {
+      val incr = new BlockingIncr().supplier
+      for {
+        prefetcher          <- PrefetchingSupplier.withInitialFetch(-42, incr, 1.second).provideCustomLayer(logEnv)
+        immediatelyHeld     <- prefetcher.currentValueRef.get
+        _                   <- TestClock.adjust(1.second)
+        initialSupplierCall <- prefetcher.currentValueRef.get
+        _                   <- TestClock.adjust(1.second)
+        secondSupplierCall  <- prefetcher.currentValueRef.get
+      } yield assert(immediatelyHeld)(equalTo(-41)) &&
+        assert(initialSupplierCall)(equalTo(-40)) &&
+        assert(secondSupplierCall)(equalTo(-39))
     }
   )
 
-  private val incrementer = ZIO.fromFunction[Int, Int](i => i + 1)
+  private val incrementer = ZIO.fromFunction[Has[Int], Int](i => i.get + 1)
 
   class Incr() {
     private var counter: Int = -1
@@ -105,6 +119,15 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       counter += 1
       counter
     }
+  }
+
+  class BlockingIncr() {
+
+    val supplier: ZIO[Blocking with Has[Int], Throwable, Int] =
+      for {
+        prev <- ZIO.access[Has[Int]](_.get)
+        next <- effectBlocking(prev + 1)
+      } yield next
   }
 
   class FailingIncr() {
