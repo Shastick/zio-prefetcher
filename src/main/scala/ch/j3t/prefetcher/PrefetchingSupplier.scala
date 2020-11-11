@@ -8,14 +8,28 @@ import zio._
  * This class is akin to a Supplier[T] that will always have a T immediately available,
  * while it is updated by a background job on a regular basis.
  *
+ * @tparam T the type of the pre-fetched value
+ */
+trait PrefetchingSupplier[T] {
+
+  /**
+   * @return an IO wrapping the value currently held by this pre-fetcher.
+   */
+  def get: IO[Nothing, T]
+
+}
+
+/**
+ * Concrete implementation for the PrefetchingSupplier trait. Should be used most of the time.
+ *
  * @param prefetchedValueRef the Ref pointing to the currently held pre-fetched value
  * @param updateFiber the fiber running the regular update job
  * @tparam T the type of the pre-fetched value
  */
-class PrefetchingSupplier[T] private (
+class LivePrefetchingSupplier[T] private[prefetcher] (
   prefetchedValueRef: Ref[T],
   val updateFiber: Fiber[Throwable, Any]
-) {
+) extends PrefetchingSupplier[T] {
 
   val currentValueRef = prefetchedValueRef.readOnly
 
@@ -23,7 +37,27 @@ class PrefetchingSupplier[T] private (
 
 }
 
+/**
+ * Static implementation of the prefetching supplier trait.
+ *
+ * Mostly useful for tests.
+ *
+ * @param get the forever fixed value to be returned
+ * @tparam T the type of the pre-fetched value
+ */
+class StaticPrefetchingSupplier[T] private[prefetcher] (val get: UIO[T]) extends PrefetchingSupplier[T]
+
 object PrefetchingSupplier {
+
+  /**
+   * Build a static prefetcher (eg, a trivial supplier) from the passed value
+   */
+  def static[T](v: T): PrefetchingSupplier[T] = new StaticPrefetchingSupplier(IO.succeed(v))
+
+  /**
+   * Build a static prefetcher (eg, a trivial supplier) from the passed UIO
+   */
+  def staticM[T](v: UIO[T]): PrefetchingSupplier[T] = new StaticPrefetchingSupplier(v)
 
   /**
    * Builds a prefetcher that refreshes its stored value using the passed supplier at every updateInterval.
@@ -49,7 +83,7 @@ object PrefetchingSupplier {
     for {
       refWithInitialContent <- Ref.make(initialValue)
       updateFiber           <- scheduleUpdate(refWithInitialContent, supplier, updateInterval, initialWait).fork
-    } yield new PrefetchingSupplier(refWithInitialContent, updateFiber)
+    } yield new LivePrefetchingSupplier(refWithInitialContent, updateFiber)
 
   /**
    * Variant of #withInitialValue() that will compute the first value to be held by the prefetcher by invoking the supplier.
@@ -67,7 +101,7 @@ object PrefetchingSupplier {
       initialValue          <- supplier.provideCustomLayer(ZLayer.succeed(zero))
       refWithInitialContent <- Ref.make[T](initialValue)
       updateFiber           <- scheduleUpdateWithInitialDelay[T](refWithInitialContent, supplier, updateInterval).fork
-    } yield new PrefetchingSupplier(refWithInitialContent, updateFiber)
+    } yield new LivePrefetchingSupplier(refWithInitialContent, updateFiber)
 
   private def updatePrefetchedValueRef[T: Tag](
     valueRef: Ref[T],
