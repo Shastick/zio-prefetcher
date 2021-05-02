@@ -1,7 +1,7 @@
 package ch.j3t.prefetcher
 
 import zio.test.Assertion.equalTo
-import zio.test.{ assert, suite, testM, DefaultRunnableSpec }
+import zio.test.{ assert, DefaultRunnableSpec }
 import zio.{ UIO }
 
 object StaticSupplierSpec extends DefaultRunnableSpec {

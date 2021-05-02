@@ -10,6 +10,8 @@ lazy val root =
       libraryDependencies ++= Seq(
         library.zio % Provided,
         library.zioLogging % Provided,
+        library.zioMetrics % Provided,
+        // library.metricsCore % Provided,
         library.zioTest    % Test,
         library.zioTestSbt % Test
       ),
@@ -25,11 +27,13 @@ lazy val library =
   new {
 
     object Version {
-      val zio = "1.0.1"
+      val zio = "1.0.7"
     }
 
     val zio        = "dev.zio" %% "zio"          % Version.zio
-    val zioLogging = "dev.zio" %% "zio-logging"  % "0.4.0"
+    val zioLogging = "dev.zio" %% "zio-logging"  % "0.5.8"
+    val zioMetrics = "dev.zio" %% "zio-metrics-dropwizard" % "1.0.8"
+    val metricsCore = "io.dropwizard.metrics" % "metrics-core" % "4.1.21"
     val zioTest    = "dev.zio" %% "zio-test"     % Version.zio
     val zioTestSbt = "dev.zio" %% "zio-test-sbt" % Version.zio
   }
@@ -47,7 +51,7 @@ lazy val commonSettings =
   Seq(
     name := "zio-prefetcher",
     scalaVersion := "2.13.3",
-    crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.3"),
+    crossScalaVersions := Seq("2.12.12", "2.13.5"),
     organization := "ch.j3t",
     organizationName := "j3t",
     homepage := Some(url("https://github.com/Shastick/zio-prefetcher/")),
@@ -81,3 +85,6 @@ lazy val scalafmtSettings =
 lazy val commandAliases =
   addCommandAlias("fmt", "all scalafmtSbt scalafmt test:scalafmt") ++
     addCommandAlias("check", "all scalafmtSbtCheck scalafmtCheck test:scalafmtCheck")
+
+// Fix that annoying "scalac: 'nullary-override' is not a valid choice for '-Xlint'" error
+scalacOptions ~= { opts => opts.filterNot(Set("-Xlint:nullary-override")) }

@@ -41,7 +41,9 @@ libraryDependencies += "ch.j3t" %% "zio-prefetcher" % version
 
 [Check over here for all available versions](https://mvnrepository.com/artifact/ch.j3t/zio-prefetcher)
 
-This library is built against `zio` version `1.0.1` and `zio-logging` version `0.4.0` but expects you to provide `zio` and `zio-logging` at runtime. At the moment only Scala 2.13 is supported.
+This library is built against `zio` version `1.0.7` and `zio-logging` version `0.5.8` but expects you to provide `zio` and `zio-logging` at runtime.
+
+Additionally, if you intend to rely on the pre-fetchers that expose metrics, you'll need to provide `zio-metrics-dropwizard`.
 
 ## Example use cases
 
@@ -66,11 +68,11 @@ A pre-fetcher can be useful in situations where you have some data (configuratio
   
 Combined with access costs that range from _annoying_ to _prohibitive_, eg:
  - latencies to reach some other service
- - complex queries that take a (long) while but yield small resulty
+ - complex queries that take a (long) while but yield small results
  
 And assuming that everything you generally need fits in RAM...
 
-For cases that match all of the above, it can be interesting to rely on pre-fetched data instead of looking things up
+For cases that match all the above, it can be interesting to rely on pre-fetched data instead of looking things up
 through an external service, be it with or without some caching involved.
 
 ## What does this solve that a cache cannot?
@@ -92,4 +94,5 @@ Making a pure ZIO prefetcher seemed like a nice little challenge.
 
 ## Disclaimer
 
-This is some toy-code that _will_ see some production use but that is, nevertheless, written by a ZIO-Newbie: so use it at your own risks.
+This is ~~some toy-code that will see some production use~~ actually being used in production but is, 
+nevertheless, written by a relative ZIO-Newbie: so use it at your own risks.

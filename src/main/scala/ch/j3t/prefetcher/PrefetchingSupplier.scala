@@ -3,6 +3,10 @@ package ch.j3t.prefetcher
 import zio.duration.{ Duration, _ }
 import zio.logging._
 import zio._
+import zio.metrics.dropwizard._
+import zio.metrics.dropwizard.helpers._
+
+import java.time.Instant
 
 /**
  * This class is akin to a Supplier[T] that will always have a T immediately available,
@@ -17,6 +21,16 @@ trait PrefetchingSupplier[T] {
    */
   def get: IO[Nothing, T]
 
+  /**
+   * @return the time of the last successful update
+   */
+  def lastSuccessfulUpdate: IO[Nothing, Instant]
+
+  /**
+   * @return the interval at which this prefetcher is updated
+   */
+  def updateInterval: Duration
+
 }
 
 /**
@@ -28,6 +42,8 @@ trait PrefetchingSupplier[T] {
  */
 class LivePrefetchingSupplier[T] private[prefetcher] (
   prefetchedValueRef: Ref[T],
+  lastOkUpdate: Ref[Instant],
+  val updateInterval: Duration,
   val updateFiber: Fiber[Throwable, Any]
 ) extends PrefetchingSupplier[T] {
 
@@ -35,6 +51,10 @@ class LivePrefetchingSupplier[T] private[prefetcher] (
 
   val get = prefetchedValueRef.get
 
+  /**
+   * @return the elapsed duration since the last successful update
+   */
+  def lastSuccessfulUpdate: IO[Nothing, Instant] = lastOkUpdate.get
 }
 
 /**
@@ -45,19 +65,26 @@ class LivePrefetchingSupplier[T] private[prefetcher] (
  * @param get the forever fixed value to be returned
  * @tparam T the type of the pre-fetched value
  */
-class StaticPrefetchingSupplier[T] private[prefetcher] (val get: UIO[T]) extends PrefetchingSupplier[T]
+class StaticPrefetchingSupplier[T] private[prefetcher] (
+  val get: UIO[T],
+  val updateInterval: Duration
+) extends PrefetchingSupplier[T] {
+
+  override def lastSuccessfulUpdate: IO[Nothing, Instant] = IO.succeed(Instant.now())
+
+}
 
 object PrefetchingSupplier {
 
   /**
    * Build a static prefetcher (eg, a trivial supplier) from the passed value
    */
-  def static[T](v: T): PrefetchingSupplier[T] = new StaticPrefetchingSupplier(IO.succeed(v))
+  def static[T](v: T): PrefetchingSupplier[T] = new StaticPrefetchingSupplier(IO.succeed(v), Duration.Infinity)
 
   /**
    * Build a static prefetcher (eg, a trivial supplier) from the passed UIO
    */
-  def staticM[T](v: UIO[T]): PrefetchingSupplier[T] = new StaticPrefetchingSupplier(v)
+  def staticM[T](v: UIO[T]): PrefetchingSupplier[T] = new StaticPrefetchingSupplier(v, Duration.Infinity)
 
   /**
    * Builds a prefetcher that refreshes its stored value using the passed supplier at every updateInterval.
@@ -82,8 +109,15 @@ object PrefetchingSupplier {
   ) =
     for {
       refWithInitialContent <- Ref.make(initialValue)
-      updateFiber           <- scheduleUpdate(refWithInitialContent, supplier, updateInterval, initialWait).fork
-    } yield new LivePrefetchingSupplier(refWithInitialContent, updateFiber)
+      lastOkUpdate          <- Ref.make(Instant.now())
+      updateFiber <- scheduleUpdate(
+                       refWithInitialContent,
+                       lastOkUpdate,
+                       supplier,
+                       updateInterval,
+                       initialWait
+                     ).fork
+    } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, updateInterval, updateFiber)
 
   /**
    * Variant of #withInitialValue() that will compute the first value to be held by the prefetcher by invoking the supplier.
@@ -100,11 +134,18 @@ object PrefetchingSupplier {
     for {
       initialValue          <- supplier.provideCustomLayer(ZLayer.succeed(zero))
       refWithInitialContent <- Ref.make[T](initialValue)
-      updateFiber           <- scheduleUpdateWithInitialDelay[T](refWithInitialContent, supplier, updateInterval).fork
-    } yield new LivePrefetchingSupplier(refWithInitialContent, updateFiber)
+      lastOkUpdate          <- Ref.make(Instant.now())
+      updateFiber <- scheduleUpdateWithInitialDelay[T](
+                       refWithInitialContent,
+                       lastOkUpdate,
+                       supplier,
+                       updateInterval
+                     ).fork
+    } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, updateInterval, updateFiber)
 
   private def updatePrefetchedValueRef[T: Tag](
     valueRef: Ref[T],
+    successTimeRef: Ref[Instant],
     valueSupplier: ZIO[ZEnv with Has[T], Throwable, T]
   ) =
     for {
@@ -121,24 +162,128 @@ object PrefetchingSupplier {
                     )
                   )
       _ <- valueRef.set(newVal)
+      _ <- successTimeRef.set(Instant.now())
       _ <- log.debug("Successfully update pre-fetched value.")
     } yield ()
 
   private def scheduleUpdate[T: Tag](
     valueRef: Ref[T],
+    successTimeRef: Ref[Instant],
     supplier: ZIO[ZEnv with Has[T], Throwable, T],
     updateInterval: Duration,
     initialWait: Duration
   ) =
-    ZIO.sleep(initialWait) *> updatePrefetchedValueRef(valueRef, supplier)
-      .retry(Schedule.spaced(updateInterval))
-      .repeat(Schedule.spaced(updateInterval))
+    // Sleep for the initial wait duration
+    ZIO.sleep(initialWait) *>
+      // Then attempt a refresh
+      updatePrefetchedValueRef(valueRef, successTimeRef, supplier)
+        // Retry at each interval until we succeed
+        .retry(Schedule.spaced(updateInterval))
+        // When we succeed, repeat at every interval
+        .repeat(Schedule.spaced(updateInterval))
 
   private def scheduleUpdateWithInitialDelay[T: Tag](
     valueRef: Ref[T],
+    successTimeRef: Ref[Instant],
     supplier: ZIO[ZEnv with Has[T], Throwable, T],
     updateInterval: Duration
   ) =
-    ZIO.sleep(updateInterval) *> scheduleUpdate(valueRef, supplier, updateInterval, Duration.Zero)
+    ZIO.sleep(updateInterval) *>
+      scheduleUpdate(
+        valueRef,
+        successTimeRef,
+        supplier,
+        updateInterval,
+        Duration.Zero
+      )
+
+  /**
+   * Similar in all points to #withInitialValue(), but exposes some refresh statistics
+   * via dropwizard metrics, using the registry passed in the environment.
+   *
+   * @param prefetcherName the name used to identify this prefetcher in the exposed metrics
+   */
+  def monitoredWithInitialValue[T: Tag](
+    initialValue: T,
+    supplier: ZIO[Has[T], Throwable, T],
+    updateInterval: Duration,
+    prefetcherName: String,
+    initialWait: Duration = 0.seconds
+  ) =
+    for {
+      // Registry metrics and get the registry from the environment
+      (t, fm, registry) <- registerMetrics(prefetcherName)
+      // Rely on the traditional "non-registry aware" #withInitialValue()
+      pfs <- withInitialValue(
+               initialValue,
+               // Wrap the passed supplier in another one that updates the metrics,
+               // pass the registry so we can rely in #withInitialValue without making it
+               // Registry aware
+               timedSupplier(supplier, t, fm).provideSomeLayer[Has[T]](registry),
+               updateInterval,
+               initialWait
+             )
+      _ <- registerGauge(pfs, prefetcherName)
+    } yield pfs
+
+  def monitoredWithInitialFetch[T: Tag](
+    zero: T,
+    supplier: ZIO[ZEnv with Has[T], Throwable, T],
+    updateInterval: Duration,
+    prefetcherName: String
+  ) = for {
+    // Registry metrics and get the registry from the environment
+    (t, fm, registry) <- registerMetrics(prefetcherName)
+    pfs <- withInitialFetch(
+             zero,
+             // Wrap the passed supplier in another one that updates the metrics,
+             // pass the registry so we can rely in #withInitialValue
+             // without making it Registry aware.
+             timedSupplier(supplier, t, fm).provideSomeLayer[Has[T] with ZEnv](registry),
+             updateInterval
+           )
+    _ <- registerGauge(pfs, prefetcherName)
+  } yield pfs
+
+  private def registerMetrics(prefetcherName: String) =
+    for {
+      // Register a timer
+      t <- timer.register(prefetcherName, Array("refresh_timer"))
+      // ... and a failures meter
+      fm <- meter.register(prefetcherName, Array("failures"))
+      // Read the registry from the environment for later direct usage.
+      registryFromEnv <- ZIO.access[Registry](_.get).map(ZLayer.succeed(_))
+    } yield (t, fm, registryFromEnv)
+
+  /**
+   * @return a supplier that additionally tracks how long the passed supplier takes via the specified timer.
+   */
+  private def timedSupplier[R, T](supplier: ZIO[R, Throwable, T], t: Timer, failures: Meter) =
+    for {
+      ctx <- t.start()
+      suppliedVal <- supplier
+                       // If the supplier fails -> mark a failure
+                       .onError(_ => failures.mark().ignore)
+                       // In any case, stop the timer
+                       .ensuring(t.stop(ctx).ignore)
+    } yield suppliedVal
+
+  private def registerGauge[T](pfs: PrefetchingSupplier[T], prefetcherName: String) = {
+    // Absolutely ugly way of having the gauge be able to read directly from _something_ that is not a ZIO effect:
+    // This volatile var will be written to from a separate fiber on a regular basis.
+    @volatile
+    var elapsedTime: Long = 0
+    for {
+      _ <- gauge.register(prefetcherName, Array("last_success_ms"), () => elapsedTime)
+      // Update the elapsed time since last success every second, so it may be read by the gauge.
+      _ <- millisSinceLastSuccessfulUpdate(pfs)
+             .map(ms => elapsedTime = ms)
+             .repeat(Schedule.spaced(1.second))
+             .fork
+    } yield ()
+  }
+
+  private def millisSinceLastSuccessfulUpdate[T](pfs: PrefetchingSupplier[T]) =
+    pfs.lastSuccessfulUpdate.map(t => System.currentTimeMillis() - t.toEpochMilli)
 
 }
