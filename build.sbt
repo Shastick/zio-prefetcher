@@ -9,6 +9,7 @@ lazy val root =
     .settings(
       libraryDependencies ++= Seq(
         library.zio % Provided,
+        library.zioStreams % Provided,
         library.zioLogging % Provided,
         library.zioMetrics % Provided,
         // library.metricsCore % Provided,
@@ -31,6 +32,7 @@ lazy val library =
     }
 
     val zio        = "dev.zio" %% "zio"          % Version.zio
+    val zioStreams = "dev.zio" %% "zio-streams"  % Version.zio
     val zioLogging = "dev.zio" %% "zio-logging"  % "0.5.8"
     val zioMetrics = "dev.zio" %% "zio-metrics-dropwizard" % "1.0.8"
     val metricsCore = "io.dropwizard.metrics" % "metrics-core" % "4.1.21"
@@ -50,8 +52,8 @@ lazy val settings =
 lazy val commonSettings =
   Seq(
     name := "zio-prefetcher",
-    scalaVersion := "2.13.3",
-    crossScalaVersions := Seq("2.12.12", "2.13.5"),
+    scalaVersion := "2.13.5",
+    crossScalaVersions := Seq("2.12.14", "2.13.5"),
     organization := "ch.j3t",
     organizationName := "j3t",
     homepage := Some(url("https://github.com/Shastick/zio-prefetcher/")),
