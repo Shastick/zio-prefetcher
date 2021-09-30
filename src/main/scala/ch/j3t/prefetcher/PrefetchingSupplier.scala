@@ -31,6 +31,8 @@ trait PrefetchingSupplier[T] {
    */
   def updateInterval: Duration
 
+  def subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]]
+
 }
 
 /**
@@ -44,7 +46,8 @@ class LivePrefetchingSupplier[T] private[prefetcher] (
   prefetchedValueRef: Ref[T],
   lastOkUpdate: Ref[Instant],
   val updateInterval: Duration,
-  val updateFiber: Fiber[Throwable, Any]
+  val updateFiber: Fiber[Throwable, Any],
+  val subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]]
 ) extends PrefetchingSupplier[T] {
 
   val currentValueRef = prefetchedValueRef.readOnly
@@ -67,7 +70,8 @@ class LivePrefetchingSupplier[T] private[prefetcher] (
  */
 class StaticPrefetchingSupplier[T] private[prefetcher] (
   val get: UIO[T],
-  val updateInterval: Duration
+  val updateInterval: Duration,
+  val subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]]
 ) extends PrefetchingSupplier[T] {
 
   override def lastSuccessfulUpdate: IO[Nothing, Instant] = IO.succeed(Instant.now())
@@ -75,16 +79,25 @@ class StaticPrefetchingSupplier[T] private[prefetcher] (
 }
 
 object PrefetchingSupplier {
+  val hubCapacity = 1
 
   /**
    * Build a static prefetcher (eg, a trivial supplier) from the passed value
    */
-  def static[T](v: T): PrefetchingSupplier[T] = new StaticPrefetchingSupplier(IO.succeed(v), Duration.Infinity)
+  def static[T](v: T): PrefetchingSupplier[T] =
+    // TODO do something better here
+    zio.Runtime.default.unsafeRun(for {
+      hub <- Hub.sliding[T](hubCapacity)
+    } yield new StaticPrefetchingSupplier(IO.succeed(v), Duration.Infinity, hub.subscribe))
 
   /**
    * Build a static prefetcher (eg, a trivial supplier) from the passed UIO
    */
-  def staticM[T](v: UIO[T]): PrefetchingSupplier[T] = new StaticPrefetchingSupplier(v, Duration.Infinity)
+  def staticM[T](v: UIO[T]): PrefetchingSupplier[T] =
+    // TODO do something better here
+    zio.Runtime.default.unsafeRun(for {
+      hub <- Hub.sliding[T](hubCapacity)
+    } yield new StaticPrefetchingSupplier(v, Duration.Infinity, hub.subscribe))
 
   /**
    * Builds a prefetcher that refreshes its stored value using the passed supplier at every updateInterval.
@@ -108,6 +121,7 @@ object PrefetchingSupplier {
     initialWait: Duration = 0.seconds
   ) =
     for {
+      hub                   <- Hub.sliding[T](hubCapacity)
       refWithInitialContent <- Ref.make(initialValue)
       lastOkUpdate          <- Ref.make(Instant.now())
       updateFiber <- scheduleUpdate(
@@ -115,9 +129,10 @@ object PrefetchingSupplier {
                        lastOkUpdate,
                        supplier,
                        updateInterval,
-                       initialWait
+                       initialWait,
+                       hub
                      ).fork
-    } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, updateInterval, updateFiber)
+    } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, updateInterval, updateFiber, hub.subscribe)
 
   /**
    * Variant of #withInitialValue() that will compute the first value to be held by the prefetcher by invoking the supplier.
@@ -132,6 +147,7 @@ object PrefetchingSupplier {
     updateInterval: Duration
   ) =
     for {
+      hub                   <- Hub.sliding[T](hubCapacity)
       initialValue          <- supplier.provideCustomLayer(ZLayer.succeed(zero))
       refWithInitialContent <- Ref.make[T](initialValue)
       lastOkUpdate          <- Ref.make(Instant.now())
@@ -139,14 +155,16 @@ object PrefetchingSupplier {
                        refWithInitialContent,
                        lastOkUpdate,
                        supplier,
-                       updateInterval
+                       updateInterval,
+                       hub
                      ).fork
-    } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, updateInterval, updateFiber)
+    } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, updateInterval, updateFiber, hub.subscribe)
 
   private def updatePrefetchedValueRef[T: Tag](
     valueRef: Ref[T],
     successTimeRef: Ref[Instant],
-    valueSupplier: ZIO[ZEnv with Has[T], Throwable, T]
+    valueSupplier: ZIO[ZEnv with Has[T], Throwable, T],
+    hub: Hub[T]
   ) =
     for {
       _ <- log.info("Running supplier to updated pre-fetched value...")
@@ -163,6 +181,7 @@ object PrefetchingSupplier {
                   )
       _ <- valueRef.set(newVal)
       _ <- successTimeRef.set(Instant.now())
+      _ <- hub.publish(newVal)
       _ <- log.debug("Successfully update pre-fetched value.")
     } yield ()
 
@@ -171,12 +190,13 @@ object PrefetchingSupplier {
     successTimeRef: Ref[Instant],
     supplier: ZIO[ZEnv with Has[T], Throwable, T],
     updateInterval: Duration,
-    initialWait: Duration
+    initialWait: Duration,
+    hub: Hub[T]
   ) =
     // Sleep for the initial wait duration
     ZIO.sleep(initialWait) *>
       // Then attempt a refresh
-      updatePrefetchedValueRef(valueRef, successTimeRef, supplier)
+      updatePrefetchedValueRef(valueRef, successTimeRef, supplier, hub)
         // Retry at each interval until we succeed
         .retry(Schedule.spaced(updateInterval))
         // When we succeed, repeat at every interval
@@ -186,7 +206,8 @@ object PrefetchingSupplier {
     valueRef: Ref[T],
     successTimeRef: Ref[Instant],
     supplier: ZIO[ZEnv with Has[T], Throwable, T],
-    updateInterval: Duration
+    updateInterval: Duration,
+    hub: Hub[T]
   ) =
     ZIO.sleep(updateInterval) *>
       scheduleUpdate(
@@ -194,7 +215,8 @@ object PrefetchingSupplier {
         successTimeRef,
         supplier,
         updateInterval,
-        Duration.Zero
+        Duration.Zero,
+        hub
       )
 
   /**

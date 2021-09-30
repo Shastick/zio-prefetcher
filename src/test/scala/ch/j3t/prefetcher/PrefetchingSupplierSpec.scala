@@ -1,7 +1,7 @@
 package ch.j3t.prefetcher
 
 import com.codahale.metrics.MetricRegistry
-import zio.{ Has, ZIO, ZLayer }
+import zio.{ Chunk, Has, Promise, ZIO, ZLayer }
 import zio.logging.Logging
 import zio.test.Assertion.{ endsWithString, equalTo }
 import zio.test.environment.TestClock
@@ -9,6 +9,7 @@ import zio.test.{ assert, DefaultRunnableSpec }
 import zio.duration._
 import zio.blocking._
 import zio.metrics.dropwizard._
+import zio.stream.ZStream
 
 object PrefetchingSupplierSpec extends DefaultRunnableSpec {
 
@@ -47,6 +48,51 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       } yield assert(immediatelyHeld)(equalTo(0)) &&
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2))
+    ),
+    testM("Correctly allow to subscribe more than one streams")(
+      for {
+        promise <- Promise.make[Nothing, Unit]
+        prefetcher <-
+          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
+        firstStream = ZStream.managed(prefetcher.subscribeToUpdates).flatMap { queue =>
+                        ZStream.fromEffect(promise.succeed(())) *>
+                          ZStream.fromQueue(queue)
+                      }
+        secondStream = ZStream.managed(prefetcher.subscribeToUpdates).flatMap { queue =>
+                         ZStream.fromQueue(queue)
+                       }
+        firstFiber          <- firstStream.take(2).runCollect.fork
+        secondFiber         <- secondStream.take(2).runCollect.fork
+        _                   <- promise.await
+        immediatelyHeld     <- prefetcher.currentValueRef.get
+        _                   <- TestClock.adjust(100.millis)
+        initialSupplierCall <- prefetcher.currentValueRef.get
+        _                   <- TestClock.adjust(1.second)
+        secondSupplierCall  <- prefetcher.currentValueRef.get
+        firstCollected      <- firstFiber.join
+        secondCollected     <- secondFiber.join
+      } yield assert(immediatelyHeld)(equalTo(0)) &&
+        assert(initialSupplierCall)(equalTo(1)) &&
+        assert(secondSupplierCall)(equalTo(2)) &&
+        assert(firstCollected)(equalTo(Chunk(1, 2))) &&
+        assert(firstCollected)(equalTo(secondCollected))
+    ),
+    testM("Correctly get the latest value if we subscribe later")(
+      for {
+        prefetcher <-
+          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
+        immediatelyHeld     <- prefetcher.currentValueRef.get
+        _                   <- TestClock.adjust(100.millis)
+        initialSupplierCall <- prefetcher.currentValueRef.get
+        stream               = ZStream.managed(prefetcher.subscribeToUpdates).flatMap(q => ZStream.fromQueue(q))
+        fiber               <- stream.take(1).runCollect.fork
+        _                   <- TestClock.adjust(1.second)
+        secondSupplierCall  <- prefetcher.currentValueRef.get
+        collected           <- fiber.join
+      } yield assert(immediatelyHeld)(equalTo(0)) &&
+        assert(initialSupplierCall)(equalTo(1)) &&
+        assert(secondSupplierCall)(equalTo(2)) &&
+        assert(collected)(equalTo(Chunk(2)))
     ),
     testM("Correctly update the pre-fetched ref and update metrics")(
       for {

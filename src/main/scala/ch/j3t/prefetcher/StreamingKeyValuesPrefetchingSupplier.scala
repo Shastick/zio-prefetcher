@@ -1,11 +1,9 @@
 package ch.j3t.prefetcher
 
 import zio.clock._
-import zio.{ Chunk, Fiber, IO, Ref, ZIO }
+import zio.{ Chunk, Fiber, Hub, IO, Ref, ZDequeue, ZIO, ZManaged }
 import zio.duration.{ durationInt, Duration }
 import zio.stream.{ UStream, ZStream }
-import zio.duration._
-
 import java.time.Instant
 
 object StreamingKeyValuesPrefetchingSupplier {
@@ -27,7 +25,8 @@ object StreamingKeyValuesPrefetchingSupplier {
   class StreamingPrefetchingSupplier[T] private[prefetcher] (
     prefetchedValueRef: Ref[T],
     lastOkUpdate: Ref[Instant],
-    val updateFiber: Fiber[Throwable, Any]
+    val updateFiber: Fiber[Throwable, Any],
+    val subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]]
   ) extends PrefetchingSupplier[T] {
 
     val currentValueRef = prefetchedValueRef.readOnly
@@ -41,6 +40,7 @@ object StreamingKeyValuesPrefetchingSupplier {
      * @return the elapsed duration since the last successful update
      */
     def lastSuccessfulUpdate: IO[Nothing, Instant] = lastOkUpdate.get
+
   }
 
   /**
@@ -66,6 +66,7 @@ object StreamingKeyValuesPrefetchingSupplier {
     groupedWithinDuration: Duration = 1.second
   ): ZIO[Clock, Nothing, StreamingPrefetchingSupplier[Map[K, V]]] =
     for {
+      hub          <- Hub.sliding[Map[K, V]](1)
       contentRef   <- Ref.make(initialValue)
       lastOkUpdate <- instant.flatMap(i => Ref.make(i))
       // Caller is responsible for handling any errors:
@@ -75,7 +76,12 @@ object StreamingKeyValuesPrefetchingSupplier {
                        .mapM(u => updateMap(contentRef, u, lastOkUpdate).runDrain)
                        .runDrain
                        .fork
-    } yield new StreamingPrefetchingSupplier(contentRef, lastOkUpdate, updateFiber)
+    } yield new StreamingPrefetchingSupplier(
+      contentRef,
+      lastOkUpdate,
+      updateFiber,
+      hub.subscribe
+    )
 
   private def updateMap[K, V](
     mapRef: Ref[Map[K, V]],
