@@ -45,9 +45,9 @@ trait PrefetchingSupplier[T] {
 class LivePrefetchingSupplier[T] private[prefetcher] (
   prefetchedValueRef: Ref[T],
   lastOkUpdate: Ref[Instant],
+  hub: Hub[T],
   val updateInterval: Duration,
-  val updateFiber: Fiber[Throwable, Any],
-  val subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]]
+  val updateFiber: Fiber[Throwable, Any]
 ) extends PrefetchingSupplier[T] {
 
   val currentValueRef = prefetchedValueRef.readOnly
@@ -58,6 +58,8 @@ class LivePrefetchingSupplier[T] private[prefetcher] (
    * @return the elapsed duration since the last successful update
    */
   def lastSuccessfulUpdate: IO[Nothing, Instant] = lastOkUpdate.get
+
+  def subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]] = hub.subscribe
 }
 
 /**
@@ -69,16 +71,21 @@ class LivePrefetchingSupplier[T] private[prefetcher] (
  * @tparam T the type of the pre-fetched value
  */
 class StaticPrefetchingSupplier[T] private[prefetcher] (
+  hub: Hub[T],
   val get: UIO[T],
-  val updateInterval: Duration,
-  val subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]]
+  val updateInterval: Duration
 ) extends PrefetchingSupplier[T] {
 
-  override def lastSuccessfulUpdate: IO[Nothing, Instant] = IO.succeed(Instant.now())
+  override def lastSuccessfulUpdate: IO[Nothing, Instant]                     = IO.succeed(Instant.now())
+  def subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]] = hub.subscribe
 
 }
 
 object PrefetchingSupplier {
+  /*
+    Capacity of the hub that holds updates values in a message queue.
+    We set it as 1 (combined with a sliding hub) because we are only interested in keeping the last update
+   */
   val hubCapacity = 1
 
   /**
@@ -88,7 +95,7 @@ object PrefetchingSupplier {
     // TODO do something better here
     zio.Runtime.default.unsafeRun(for {
       hub <- Hub.sliding[T](hubCapacity)
-    } yield new StaticPrefetchingSupplier(IO.succeed(v), Duration.Infinity, hub.subscribe))
+    } yield new StaticPrefetchingSupplier(hub, IO.succeed(v), Duration.Infinity))
 
   /**
    * Build a static prefetcher (eg, a trivial supplier) from the passed UIO
@@ -97,7 +104,7 @@ object PrefetchingSupplier {
     // TODO do something better here
     zio.Runtime.default.unsafeRun(for {
       hub <- Hub.sliding[T](hubCapacity)
-    } yield new StaticPrefetchingSupplier(v, Duration.Infinity, hub.subscribe))
+    } yield new StaticPrefetchingSupplier(hub, v, Duration.Infinity))
 
   /**
    * Builds a prefetcher that refreshes its stored value using the passed supplier at every updateInterval.
@@ -132,7 +139,7 @@ object PrefetchingSupplier {
                        initialWait,
                        hub
                      ).fork
-    } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, updateInterval, updateFiber, hub.subscribe)
+    } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, hub, updateInterval, updateFiber)
 
   /**
    * Variant of #withInitialValue() that will compute the first value to be held by the prefetcher by invoking the supplier.
@@ -158,7 +165,7 @@ object PrefetchingSupplier {
                        updateInterval,
                        hub
                      ).fork
-    } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, updateInterval, updateFiber, hub.subscribe)
+    } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, hub, updateInterval, updateFiber)
 
   private def updatePrefetchedValueRef[T: Tag](
     valueRef: Ref[T],

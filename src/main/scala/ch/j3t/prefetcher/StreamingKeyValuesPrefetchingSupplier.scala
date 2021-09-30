@@ -25,8 +25,8 @@ object StreamingKeyValuesPrefetchingSupplier {
   class StreamingPrefetchingSupplier[T] private[prefetcher] (
     prefetchedValueRef: Ref[T],
     lastOkUpdate: Ref[Instant],
-    val updateFiber: Fiber[Throwable, Any],
-    val subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]]
+    hub: Hub[T],
+    val updateFiber: Fiber[Throwable, Any]
   ) extends PrefetchingSupplier[T] {
 
     val currentValueRef = prefetchedValueRef.readOnly
@@ -40,6 +40,8 @@ object StreamingKeyValuesPrefetchingSupplier {
      * @return the elapsed duration since the last successful update
      */
     def lastSuccessfulUpdate: IO[Nothing, Instant] = lastOkUpdate.get
+
+    def subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Nothing, T]] = hub.subscribe
 
   }
 
@@ -79,8 +81,8 @@ object StreamingKeyValuesPrefetchingSupplier {
     } yield new StreamingPrefetchingSupplier(
       contentRef,
       lastOkUpdate,
-      updateFiber,
-      hub.subscribe
+      hub,
+      updateFiber
     )
 
   private def updateMap[K, V](
