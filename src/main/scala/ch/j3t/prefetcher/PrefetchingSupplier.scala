@@ -32,6 +32,9 @@ trait PrefetchingSupplier[T] {
    */
   def updateInterval: Duration
 
+  /**
+   * @return the stream of updated prefetcher values
+   */
   def updatesStream: ZStream[Any, Nothing, T]
 
 }
@@ -60,8 +63,7 @@ class LivePrefetchingSupplier[T] private[prefetcher] (
    */
   def lastSuccessfulUpdate: IO[Nothing, Instant] = lastOkUpdate.get
 
-  def updatesStream: ZStream[Any, Nothing, T] =
-    PrefetchingSupplier.setupUpdatesStream[T](hub, get)
+  def updatesStream: ZStream[Any, Nothing, T] = PrefetchingSupplier.setupUpdatesStream[T](hub, get)
 }
 
 /**
@@ -91,6 +93,11 @@ object PrefetchingSupplier {
    */
   val hubCapacity = 1
 
+  /*
+    Creates an updates stream of prefetcher values
+    It prepends the stream with current value to make sure
+    at the moment of getting the stream we don't miss initial value of the prefetcher
+   */
   def setupUpdatesStream[T](hub: Hub[T], currentVal: UIO[T]): ZStream[Any, Nothing, T] =
     ZStream.fromEffect(currentVal) ++ ZStream.fromHub(hub)
 
