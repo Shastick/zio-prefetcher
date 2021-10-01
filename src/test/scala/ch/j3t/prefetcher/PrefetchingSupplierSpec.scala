@@ -90,19 +90,23 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       for {
         prefetcher <-
           PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
-        stream               = prefetcher.updatesStream
+        firstStream         = prefetcher.updatesStream
+        secondStream        = prefetcher.updatesStream
         immediatelyHeld     <- prefetcher.currentValueRef.get
         _                   <- TestClock.adjust(100.millis)
         initialSupplierCall <- prefetcher.currentValueRef.get
-        fiber               <- stream.take(2).runCollect.fork
+        firstFiber          <- firstStream.take(2).runCollect.fork
         _                   <- TestClock.adjust(1.second)
         secondSupplierCall  <- prefetcher.currentValueRef.get
+        secondFiber         <- secondStream.take(2).runCollect.fork
         _                   <- TestClock.adjust(1.second)
-        collected           <- fiber.join
+        firstCollected      <- firstFiber.join
+        secondCollected     <- secondFiber.join
       } yield assert(immediatelyHeld)(equalTo(0)) &&
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2)) &&
-        assert(collected)(equalTo(Chunk(1, 2)))
+        assert(firstCollected)(equalTo(Chunk(1, 2))) &&
+        assert(secondCollected)(equalTo(Chunk(2, 3)))
     ),
     testM("Correctly update the pre-fetched ref and update metrics")(
       for {

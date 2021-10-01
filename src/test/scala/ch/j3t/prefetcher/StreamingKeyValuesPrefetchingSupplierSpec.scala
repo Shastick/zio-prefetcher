@@ -127,10 +127,12 @@ object StreamingKeyValuesPrefetchingSupplierSpec extends DefaultRunnableSpec {
         pf        <- StreamingKeyValuesPrefetchingSupplier.withInitialValue(Map(), UStream.fromQueue(q), 1, 1.second)
         stream     = pf.updatesStream
         _         <- q.offer(Put("new", "value"))
-        _         <- TestClock.adjust(2.seconds)
+        _         <- q.offer(Put("another", "value"))
+        _         <- TestClock.adjust(2.second)
         sFiber    <- stream.take(1).runCollect.fork
+        _         <- TestClock.adjust(1.second)
         collected <- sFiber.join
-      } yield assert(collected)(equalTo(Chunk(Map("new" -> "value"))))
+      } yield assert(collected)(equalTo(Chunk(Map("new" -> "value", "another" -> "value"))))
     }
   )
 
