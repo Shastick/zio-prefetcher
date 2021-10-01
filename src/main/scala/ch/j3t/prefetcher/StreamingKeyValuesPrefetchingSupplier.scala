@@ -76,7 +76,13 @@ object StreamingKeyValuesPrefetchingSupplier {
       // if the stream fails or stops the prefetcher will stop
       updateFiber <- supplyingStream
                        .groupedWithin(groupedWithinSize, groupedWithinDuration)
-                       .mapM(u => updateMap(contentRef, u, lastOkUpdate, hub).runDrain)
+                       .mapM { u =>
+                         for {
+                           update     <- updateMap(contentRef, u, lastOkUpdate, hub).runDrain
+                           currentVal <- contentRef.get
+                           _          <- hub.publish(currentVal)
+                         } yield update
+                       }
                        .runDrain
                        .fork
     } yield new StreamingPrefetchingSupplier(
@@ -105,25 +111,18 @@ object StreamingKeyValuesPrefetchingSupplier {
           case _: Drop[K, V] =>
             val (drops, remaining) = updates.splitWhere(!_.isInstanceOf[Drop[K, V]])
             UStream.fromEffect(
-              dropAllFromMap(mapRef, drops.asInstanceOf[Seq[Drop[K, V]]]) *> {
-                publishToHub(mapRef, hub)
+              dropAllFromMap(mapRef, drops.asInstanceOf[Seq[Drop[K, V]]]) *>
                 instant.map(i => lastOkUpdate.set(i)).unit
-              }
             ) ++ updateMap(mapRef, remaining, lastOkUpdate, hub)
           case _: Put[K, V] =>
             val (puts, remaining) = updates.splitWhere(!_.isInstanceOf[Put[K, V]])
             UStream.fromEffect(
-              putAllIntoMap(mapRef, puts.asInstanceOf[Seq[Put[K, V]]]) *> {
-                publishToHub(mapRef, hub)
+              putAllIntoMap(mapRef, puts.asInstanceOf[Seq[Put[K, V]]]) *>
                 instant.map(i => lastOkUpdate.set(i)).unit
-              }
             ) ++ updateMap(mapRef, remaining, lastOkUpdate, hub)
         }
       }
     }
-
-  private def publishToHub[K, V](mapRef: Ref[Map[K, V]], hub: Hub[Map[K, V]]): ZIO[Any, Nothing, Unit] =
-    mapRef.get.flatMap(hub.publish).unit
 
   private def dropAllFromMap[K, V](mapRef: Ref[Map[K, V]], deletions: Seq[Drop[K, V]]): ZIO[Any, Nothing, Unit] =
     mapRef.update(_.--(deletions.map(_.k)))
