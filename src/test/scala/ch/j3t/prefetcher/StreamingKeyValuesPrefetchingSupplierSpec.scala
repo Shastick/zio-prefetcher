@@ -120,31 +120,31 @@ object StreamingKeyValuesPrefetchingSupplierSpec extends DefaultRunnableSpec {
         collected <- sFiber.join
       } yield assert(collected)(equalTo(Chunk(Map.empty[String, String])))
     },
-    testM("Updates stream returns later value if we susbcribe later") {
+    testM("Updates stream returns later value if we subscribe later") {
       for {
         q         <- Queue.unbounded[Update[String, String]]
         pf        <- StreamingKeyValuesPrefetchingSupplier.withInitialValue(Map(), UStream.fromQueue(q), 1, 1.second)
         stream     = pf.updatesStream
-        _         <- TestClock.adjust(1.second)
         _         <- q.offer(Put("key", "value"))
+        _         <- TestClock.adjust(1100.millis)
         sFiber    <- stream.take(1).runCollect.fork
+        _         <- TestClock.adjust(1.second)
         collected <- sFiber.join
       } yield assert(collected)(equalTo(Chunk(Map("key" -> "value"))))
     },
     testM("Updates stream reflects the updates") {
       for {
-        q      <- Queue.unbounded[Update[String, String]]
-        pf     <- StreamingKeyValuesPrefetchingSupplier.withInitialValue(Map(), UStream.fromQueue(q), 1, 1.second)
-        stream  = pf.updatesStream
-        sFiber <- stream.take(5).runCollect.fork
-        _      <- TestClock.adjust(1.second)
-        _      <- q.offer(Put("new", "value"))
-        _      <- q.offer(Put("one", "value"))
-        _      <- TestClock.adjust(1.second)
-        _      <- q.offer(Put("one", "value"))
-        _      <- TestClock.adjust(1.second)
-        _      <- q.offer(Drop("one"))
-
+        q         <- Queue.unbounded[Update[String, String]]
+        pf        <- StreamingKeyValuesPrefetchingSupplier.withInitialValue(Map(), UStream.fromQueue(q), 1, 1.second)
+        stream     = pf.updatesStream
+        sFiber    <- stream.take(5).runCollect.fork
+        _         <- TestClock.adjust(1100.millis)
+        _         <- q.offer(Put("new", "value"))
+        _         <- q.offer(Put("one", "value"))
+        _         <- TestClock.adjust(1100.millis)
+        _         <- q.offer(Put("one", "value"))
+        _         <- TestClock.adjust(1100.millis)
+        _         <- q.offer(Drop("one"))
         collected <- sFiber.join
       } yield assert(collected)(
         equalTo(
