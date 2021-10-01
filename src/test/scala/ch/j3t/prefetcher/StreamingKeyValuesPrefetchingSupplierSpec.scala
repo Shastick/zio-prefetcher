@@ -6,8 +6,7 @@ import zio.stream.UStream
 import zio.test.Assertion.equalTo
 import zio.test.environment.TestClock
 import zio.test.{ assert, DefaultRunnableSpec }
-import zio.Queue
-
+import zio.{ Chunk, Queue }
 import java.time.Instant
 
 object StreamingKeyValuesPrefetchingSupplierSpec extends DefaultRunnableSpec {
@@ -110,6 +109,30 @@ object StreamingKeyValuesPrefetchingSupplierSpec extends DefaultRunnableSpec {
       } yield assert(qr1)(equalTo(Map[String, String]())) &&
         assert(qr2)(equalTo(Map("new" -> "value: 1023"))) &&
         assert(tEnd)(equalTo(Instant.ofEpochMilli(0)))
+    },
+    testM("Updates stream returns the init value") {
+      for {
+        q         <- Queue.unbounded[Update[String, String]]
+        pf        <- StreamingKeyValuesPrefetchingSupplier.withInitialValue(Map(), UStream.fromQueue(q), 1, 1.second)
+        stream     = pf.updatesStream
+        sFiber    <- stream.take(1).runCollect.fork
+        _         <- q.offer(Put("new", "value"))
+        _         <- TestClock.adjust(2.seconds)
+        collected <- sFiber.join
+      } yield assert(collected)(equalTo(Chunk(Map.empty[String, String])))
+    },
+    testM("Updates stream reflects the updates") {
+      for {
+        q         <- Queue.unbounded[Update[String, String]]
+        pf        <- StreamingKeyValuesPrefetchingSupplier.withInitialValue(Map(), UStream.fromQueue(q), 1, 1.second)
+        stream     = pf.updatesStream
+        _         <- q.offer(Put("new", "value"))
+        _         <- q.offer(Put("another", "value"))
+        _         <- TestClock.adjust(2.second)
+        sFiber    <- stream.take(1).runCollect.fork
+        _         <- TestClock.adjust(1.second)
+        collected <- sFiber.join
+      } yield assert(collected)(equalTo(Chunk(Map("new" -> "value", "another" -> "value"))))
     }
   )
 

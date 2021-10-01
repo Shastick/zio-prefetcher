@@ -1,11 +1,9 @@
 package ch.j3t.prefetcher
 
 import zio.clock._
-import zio.{ Chunk, Fiber, IO, Ref, ZIO }
+import zio.{ Chunk, Fiber, Hub, IO, Ref, ZIO }
 import zio.duration.{ durationInt, Duration }
 import zio.stream.{ UStream, ZStream }
-import zio.duration._
-
 import java.time.Instant
 
 object StreamingKeyValuesPrefetchingSupplier {
@@ -27,6 +25,7 @@ object StreamingKeyValuesPrefetchingSupplier {
   class StreamingPrefetchingSupplier[T] private[prefetcher] (
     prefetchedValueRef: Ref[T],
     lastOkUpdate: Ref[Instant],
+    hub: Hub[T],
     val updateFiber: Fiber[Throwable, Any]
   ) extends PrefetchingSupplier[T] {
 
@@ -41,6 +40,10 @@ object StreamingKeyValuesPrefetchingSupplier {
      * @return the elapsed duration since the last successful update
      */
     def lastSuccessfulUpdate: IO[Nothing, Instant] = lastOkUpdate.get
+
+    def updatesStream: ZStream[Any, Nothing, T] =
+      PrefetchingSupplier.setupUpdatesStream[T](hub, get)
+
   }
 
   /**
@@ -66,21 +69,28 @@ object StreamingKeyValuesPrefetchingSupplier {
     groupedWithinDuration: Duration = 1.second
   ): ZIO[Clock, Nothing, StreamingPrefetchingSupplier[Map[K, V]]] =
     for {
+      hub          <- Hub.sliding[Map[K, V]](1)
       contentRef   <- Ref.make(initialValue)
       lastOkUpdate <- instant.flatMap(i => Ref.make(i))
       // Caller is responsible for handling any errors:
       // if the stream fails or stops the prefetcher will stop
       updateFiber <- supplyingStream
                        .groupedWithin(groupedWithinSize, groupedWithinDuration)
-                       .mapM(u => updateMap(contentRef, u, lastOkUpdate).runDrain)
+                       .mapM(u => updateMap(contentRef, u, lastOkUpdate, hub).runDrain)
                        .runDrain
                        .fork
-    } yield new StreamingPrefetchingSupplier(contentRef, lastOkUpdate, updateFiber)
+    } yield new StreamingPrefetchingSupplier(
+      contentRef,
+      lastOkUpdate,
+      hub,
+      updateFiber
+    )
 
   private def updateMap[K, V](
     mapRef: Ref[Map[K, V]],
     updates: Chunk[Update[K, V]],
-    lastOkUpdate: Ref[Instant]
+    lastOkUpdate: Ref[Instant],
+    hub: Hub[Map[K, V]]
   ): ZStream[Clock, Nothing, Unit] =
     // Deletions are expected to be rare, but we still need to respect the order of the updates:
     // we ensure that a deletion happens _after_ anything addition that came before it in the chunk
@@ -90,20 +100,30 @@ object StreamingKeyValuesPrefetchingSupplier {
       // 1 or more updates. Jump through the streaming hoops so we don't blow the stack
       // (chaining ZIO's with recursive calls to updateMap would explode quickly)
       // TODO rely on the Clock from the environment as it's available anyway
-      case _ =>
+      case _ => {
         updates.head match {
           case _: Drop[K, V] =>
             val (drops, remaining) = updates.splitWhere(!_.isInstanceOf[Drop[K, V]])
             UStream.fromEffect(
-              dropAllFromMap(mapRef, drops.asInstanceOf[Seq[Drop[K, V]]]) *> instant.map(i => lastOkUpdate.set(i)).unit
-            ) ++ updateMap(mapRef, remaining, lastOkUpdate)
+              dropAllFromMap(mapRef, drops.asInstanceOf[Seq[Drop[K, V]]]) *> {
+                publishToHub(mapRef, hub)
+                instant.map(i => lastOkUpdate.set(i)).unit
+              }
+            ) ++ updateMap(mapRef, remaining, lastOkUpdate, hub)
           case _: Put[K, V] =>
             val (puts, remaining) = updates.splitWhere(!_.isInstanceOf[Put[K, V]])
             UStream.fromEffect(
-              putAllIntoMap(mapRef, puts.asInstanceOf[Seq[Put[K, V]]]) *> instant.map(i => lastOkUpdate.set(i)).unit
-            ) ++ updateMap(mapRef, remaining, lastOkUpdate)
+              putAllIntoMap(mapRef, puts.asInstanceOf[Seq[Put[K, V]]]) *> {
+                publishToHub(mapRef, hub)
+                instant.map(i => lastOkUpdate.set(i)).unit
+              }
+            ) ++ updateMap(mapRef, remaining, lastOkUpdate, hub)
         }
+      }
     }
+
+  private def publishToHub[K, V](mapRef: Ref[Map[K, V]], hub: Hub[Map[K, V]]): ZIO[Any, Nothing, Unit] =
+    mapRef.get.flatMap(hub.publish).unit
 
   private def dropAllFromMap[K, V](mapRef: Ref[Map[K, V]], deletions: Seq[Drop[K, V]]): ZIO[Any, Nothing, Unit] =
     mapRef.update(_.--(deletions.map(_.k)))

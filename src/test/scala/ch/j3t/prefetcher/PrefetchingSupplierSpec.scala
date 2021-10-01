@@ -1,7 +1,7 @@
 package ch.j3t.prefetcher
 
 import com.codahale.metrics.MetricRegistry
-import zio.{ Has, ZIO, ZLayer }
+import zio.{ Chunk, Has, ZIO, ZLayer }
 import zio.logging.Logging
 import zio.test.Assertion.{ endsWithString, equalTo }
 import zio.test.environment.TestClock
@@ -47,6 +47,57 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       } yield assert(immediatelyHeld)(equalTo(0)) &&
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2))
+    ),
+    testM("Correctly stream the updatesStream")(
+      for {
+        prefetcher <-
+          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
+        stream     = prefetcher.updatesStream
+        fiber     <- stream.take(4).runCollect.fork
+        _         <- TestClock.adjust(3.second)
+        collected <- fiber.join
+      } yield assert(collected)(equalTo(Chunk(0, 1, 2, 3)))
+    ),
+    testM("Correctly allow to subscribe more than one stream")(
+      for {
+        prefetcher <-
+          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
+        firstStream      = prefetcher.updatesStream
+        secondStream     = prefetcher.updatesStream
+        firstFiber      <- firstStream.take(3).runCollect.fork
+        secondFiber     <- secondStream.take(3).runCollect.fork
+        _               <- TestClock.adjust(2.second)
+        firstCollected  <- firstFiber.join
+        secondCollected <- secondFiber.join
+      } yield assert(firstCollected)(equalTo(Chunk(0, 1, 2))) &&
+        assert(firstCollected)(equalTo(secondCollected))
+    ),
+    testM("Correctly get the later value if we subscribe later")(
+      for {
+        prefetcher <-
+          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
+        _         <- TestClock.adjust(100.millis)
+        stream     = prefetcher.updatesStream
+        fiber     <- stream.take(1).runCollect.fork
+        _         <- TestClock.adjust(1.second)
+        collected <- fiber.join
+      } yield assert(collected)(equalTo(Chunk(1)))
+    ),
+    testM("Correctly stream values for two streams subscribed at different time")(
+      for {
+        prefetcher <-
+          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
+        firstStream      = prefetcher.updatesStream
+        secondStream     = prefetcher.updatesStream
+        _               <- TestClock.adjust(100.millis)
+        firstFiber      <- firstStream.take(3).runCollect.fork
+        _               <- TestClock.adjust(1.second)
+        secondFiber     <- secondStream.take(3).runCollect.fork
+        _               <- TestClock.adjust(2.seconds)
+        firstCollected  <- firstFiber.join
+        secondCollected <- secondFiber.join
+      } yield assert(firstCollected)(equalTo(Chunk(1, 2, 3))) &&
+        assert(secondCollected)(equalTo(Chunk(2, 3, 4)))
     ),
     testM("Correctly update the pre-fetched ref and update metrics")(
       for {
