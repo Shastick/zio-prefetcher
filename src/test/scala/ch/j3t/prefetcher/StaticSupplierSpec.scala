@@ -24,9 +24,9 @@ object StaticSupplierSpec extends DefaultRunnableSpec {
       } yield assert(v1)(equalTo(42)) && assert(v2)(equalTo(42))
     },
     testM("static prefetcher updates stream should provide the value") {
-      val sup = PrefetchingSupplier.static(42)
+      val sup    = PrefetchingSupplier.static(42)
+      val stream = sup.updatesStream
       for {
-        stream    <- sup.updatesStream.useNow
         fiber     <- stream.take(1).runCollect.fork
         v1        <- sup.get
         v2        <- sup.get
@@ -37,9 +37,9 @@ object StaticSupplierSpec extends DefaultRunnableSpec {
         assert(collected)(equalTo(Chunk(42)))
     },
     testM("staticM prefetcher updates stream should provide the value") {
-      val sup = PrefetchingSupplier.staticM(UIO(42))
+      val sup    = PrefetchingSupplier.staticM(UIO(42))
+      val stream = sup.updatesStream
       for {
-        stream    <- sup.updatesStream.useNow
         v1        <- sup.get
         v2        <- sup.get
         fiber     <- stream.take(1).runCollect.fork

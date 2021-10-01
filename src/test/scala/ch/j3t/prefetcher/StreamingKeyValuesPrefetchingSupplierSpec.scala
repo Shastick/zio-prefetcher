@@ -114,7 +114,7 @@ object StreamingKeyValuesPrefetchingSupplierSpec extends DefaultRunnableSpec {
       for {
         q         <- Queue.unbounded[Update[String, String]]
         pf        <- StreamingKeyValuesPrefetchingSupplier.withInitialValue(Map(), UStream.fromQueue(q), 1, 1.second)
-        stream    <- pf.updatesStream.useNow
+        stream     = pf.updatesStream
         sFiber    <- stream.take(1).runCollect.fork
         _         <- q.offer(Put("new", "value"))
         _         <- TestClock.adjust(2.seconds)
@@ -123,14 +123,14 @@ object StreamingKeyValuesPrefetchingSupplierSpec extends DefaultRunnableSpec {
     },
     testM("Updates stream reflects the updates") {
       for {
-        q      <- Queue.unbounded[Update[String, String]]
-        pf     <- StreamingKeyValuesPrefetchingSupplier.withInitialValue(Map(), UStream.fromQueue(q), 1, 1.second)
-        stream <- pf.updatesStream.useNow
-        _      <- q.offer(Put("new", "value"))
-        _      <- TestClock.adjust(2.seconds)
-        sFiber <- stream.take(2).runCollect.fork
+        q         <- Queue.unbounded[Update[String, String]]
+        pf        <- StreamingKeyValuesPrefetchingSupplier.withInitialValue(Map(), UStream.fromQueue(q), 1, 1.second)
+        stream     = pf.updatesStream
+        _         <- q.offer(Put("new", "value"))
+        _         <- TestClock.adjust(2.seconds)
+        sFiber    <- stream.take(1).runCollect.fork
         collected <- sFiber.join
-      } yield assert(collected)(equalTo(Chunk(Map.empty[String, String])))
+      } yield assert(collected)(equalTo(Chunk(Map("new" -> "value"))))
     }
   )
 

@@ -32,7 +32,7 @@ trait PrefetchingSupplier[T] {
    */
   def updateInterval: Duration
 
-  def updatesStream: ZManaged[Any, Nothing, ZStream[Any, Nothing, T]]
+  def updatesStream: ZStream[Any, Nothing, T]
 
 }
 
@@ -60,7 +60,7 @@ class LivePrefetchingSupplier[T] private[prefetcher] (
    */
   def lastSuccessfulUpdate: IO[Nothing, Instant] = lastOkUpdate.get
 
-  def updatesStream: ZManaged[Any, Nothing, ZStream[Any, Nothing, T]] =
+  def updatesStream: ZStream[Any, Nothing, T] =
     PrefetchingSupplier.setupUpdatesStream[T](hub, get)
 }
 
@@ -80,7 +80,7 @@ class StaticPrefetchingSupplier[T] private[prefetcher] (
 
   override def lastSuccessfulUpdate: IO[Nothing, Instant] = IO.succeed(Instant.now())
 
-  def updatesStream: ZManaged[Any, Nothing, ZStream[Any, Nothing, T]] =
+  def updatesStream: ZStream[Any, Nothing, T] =
     PrefetchingSupplier.setupUpdatesStream[T](hub, get)
 }
 
@@ -91,10 +91,8 @@ object PrefetchingSupplier {
    */
   val hubCapacity = 1
 
-  def setupUpdatesStream[T](hub: Hub[T], currentVal: UIO[T]): ZManaged[Any, Nothing, ZStream[Any, Nothing, T]] = {
-    val stream = ZStream.managed(hub.subscribe).flatMap(queue => ZStream.fromQueue(queue))
-    ZManaged.fromEffect(ZIO.succeed(ZStream.fromEffect(currentVal).concat(stream)))
-  }
+  def setupUpdatesStream[T](hub: Hub[T], currentVal: UIO[T]): ZStream[Any, Nothing, T] =
+    ZStream.fromEffect(currentVal) ++ ZStream.fromHub(hub)
 
   /**
    * Build a static prefetcher (eg, a trivial supplier) from the passed value

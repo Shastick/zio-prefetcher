@@ -52,8 +52,8 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       for {
         prefetcher <-
           PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
-        firstStream         <- prefetcher.updatesStream.useNow
-        secondStream        <- prefetcher.updatesStream.useNow
+        firstStream          = prefetcher.updatesStream
+        secondStream         = prefetcher.updatesStream
         firstFiber          <- firstStream.take(2).runCollect.fork
         secondFiber         <- secondStream.take(2).runCollect.fork
         immediatelyHeld     <- prefetcher.currentValueRef.get
@@ -76,7 +76,7 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         immediatelyHeld     <- prefetcher.currentValueRef.get
         _                   <- TestClock.adjust(100.millis)
         initialSupplierCall <- prefetcher.currentValueRef.get
-        stream              <- prefetcher.updatesStream.useNow
+        stream               = prefetcher.updatesStream
         fiber               <- stream.take(1).runCollect.fork
         _                   <- TestClock.adjust(1.second)
         secondSupplierCall  <- prefetcher.currentValueRef.get
@@ -90,7 +90,7 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       for {
         prefetcher <-
           PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
-        stream              <- prefetcher.updatesStream.useNow
+        stream               = prefetcher.updatesStream
         immediatelyHeld     <- prefetcher.currentValueRef.get
         _                   <- TestClock.adjust(100.millis)
         initialSupplierCall <- prefetcher.currentValueRef.get

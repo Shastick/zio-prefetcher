@@ -1,7 +1,7 @@
 package ch.j3t.prefetcher
 
 import zio.clock._
-import zio.{ Chunk, Fiber, Hub, IO, Ref, ZIO, ZManaged }
+import zio.{ Chunk, Fiber, Hub, IO, Ref, ZIO }
 import zio.duration.{ durationInt, Duration }
 import zio.stream.{ UStream, ZStream }
 import java.time.Instant
@@ -41,7 +41,7 @@ object StreamingKeyValuesPrefetchingSupplier {
      */
     def lastSuccessfulUpdate: IO[Nothing, Instant] = lastOkUpdate.get
 
-    def updatesStream: ZManaged[Any, Nothing, ZStream[Any, Nothing, T]] =
+    def updatesStream: ZStream[Any, Nothing, T] =
       PrefetchingSupplier.setupUpdatesStream[T](hub, get)
 
   }
