@@ -178,7 +178,7 @@ object PrefetchingSupplier {
                      ).fork
     } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, hub, updateInterval, updateFiber)
 
-  private def updatePrefetchedValueRef[T: Tag](
+  private[prefetcher] def updatePrefetchedValueRef[T: Tag](
     valueRef: Ref[T],
     successTimeRef: Ref[Instant],
     valueSupplier: ZIO[ZEnv with Has[T], Throwable, T],
