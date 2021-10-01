@@ -5,8 +5,9 @@ import zio.logging._
 import zio._
 import zio.metrics.dropwizard._
 import zio.metrics.dropwizard.helpers._
-
 import java.time.Instant
+
+import zio.stream.ZStream
 
 /**
  * This class is akin to a Supplier[T] that will always have a T immediately available,
@@ -31,7 +32,7 @@ trait PrefetchingSupplier[T] {
    */
   def updateInterval: Duration
 
-  def subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]]
+  def updatesStream: ZManaged[Any, Nothing, ZStream[Any, Nothing, T]]
 
 }
 
@@ -59,7 +60,8 @@ class LivePrefetchingSupplier[T] private[prefetcher] (
    */
   def lastSuccessfulUpdate: IO[Nothing, Instant] = lastOkUpdate.get
 
-  def subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]] = hub.subscribe
+  def updatesStream: ZManaged[Any, Nothing, ZStream[Any, Nothing, T]] =
+    PrefetchingSupplier.setupUpdatesStream[T](hub, get)
 }
 
 /**
@@ -76,9 +78,10 @@ class StaticPrefetchingSupplier[T] private[prefetcher] (
   val updateInterval: Duration
 ) extends PrefetchingSupplier[T] {
 
-  override def lastSuccessfulUpdate: IO[Nothing, Instant]                     = IO.succeed(Instant.now())
-  def subscribeToUpdates: ZManaged[Any, Nothing, ZDequeue[Any, Throwable, T]] = hub.subscribe
+  override def lastSuccessfulUpdate: IO[Nothing, Instant] = IO.succeed(Instant.now())
 
+  def updatesStream: ZManaged[Any, Nothing, ZStream[Any, Nothing, T]] =
+    PrefetchingSupplier.setupUpdatesStream[T](hub, get)
 }
 
 object PrefetchingSupplier {
@@ -88,11 +91,15 @@ object PrefetchingSupplier {
    */
   val hubCapacity = 1
 
+  def setupUpdatesStream[T](hub: Hub[T], currentVal: UIO[T]): ZManaged[Any, Nothing, ZStream[Any, Nothing, T]] = {
+    val stream = ZStream.managed(hub.subscribe).flatMap(queue => ZStream.fromQueue(queue))
+    ZManaged.fromEffect(ZIO.succeed(ZStream.fromEffect(currentVal).concat(stream)))
+  }
+
   /**
    * Build a static prefetcher (eg, a trivial supplier) from the passed value
    */
   def static[T](v: T): PrefetchingSupplier[T] =
-    // TODO do something better here
     zio.Runtime.default.unsafeRun(for {
       hub <- Hub.sliding[T](hubCapacity)
     } yield new StaticPrefetchingSupplier(hub, IO.succeed(v), Duration.Infinity))
@@ -101,7 +108,6 @@ object PrefetchingSupplier {
    * Build a static prefetcher (eg, a trivial supplier) from the passed UIO
    */
   def staticM[T](v: UIO[T]): PrefetchingSupplier[T] =
-    // TODO do something better here
     zio.Runtime.default.unsafeRun(for {
       hub <- Hub.sliding[T](hubCapacity)
     } yield new StaticPrefetchingSupplier(hub, v, Duration.Infinity))
@@ -189,7 +195,7 @@ object PrefetchingSupplier {
       _ <- valueRef.set(newVal)
       _ <- successTimeRef.set(Instant.now())
       _ <- hub.publish(newVal)
-      _ <- log.debug("Successfully update pre-fetched value.")
+      _ <- log.debug("Successfully updated pre-fetched value.")
     } yield ()
 
   private def scheduleUpdate[T: Tag](
