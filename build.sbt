@@ -28,7 +28,7 @@ lazy val library =
   new {
 
     object Version {
-      val zio = "1.0.7"
+      val zio = "1.0.12"
     }
 
     val zio        = "dev.zio" %% "zio"          % Version.zio
