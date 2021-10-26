@@ -37,6 +37,26 @@ object StreamingKeyValuesPrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(qr2)(equalTo(Map("new" -> "value", "another" -> "kind"))) &&
         assert(qr3)(equalTo(Map("new" -> "stuff", "another" -> "kind")))
     },
+    testM(
+      "Adding new entries and overriding them in separate batches works as expected even if the parent fork terminated"
+    ) {
+      for {
+        q   <- Queue.unbounded[Update[String, String]]
+        pfF <- StreamingKeyValuesPrefetchingSupplier.withInitialValue(Map(), UStream.fromQueue(q), 1, 1.second).fork
+        pf  <- pfF.join
+        _   <- q.offer(Put("new", "value"))
+        _   <- TestClock.adjust(2.seconds)
+        qr1 <- pf.get
+        _   <- q.offer(Put("another", "kind"))
+        _   <- TestClock.adjust(2.seconds)
+        qr2 <- pf.get
+        _   <- q.offer(Put("new", "stuff"))
+        _   <- TestClock.adjust(2.seconds)
+        qr3 <- pf.get
+      } yield assert(qr1)(equalTo(Map("new" -> "value"))) &&
+        assert(qr2)(equalTo(Map("new" -> "value", "another" -> "kind"))) &&
+        assert(qr3)(equalTo(Map("new" -> "stuff", "another" -> "kind")))
+    },
     // Let's hope the ZIO peeps have their stuff together: the test below isn't entirely rigorous when
     // it comes to guarantee that the ordering is always as we think it is ;)
     testM("Adding new entries and deleting them in separate batches works as expected") {

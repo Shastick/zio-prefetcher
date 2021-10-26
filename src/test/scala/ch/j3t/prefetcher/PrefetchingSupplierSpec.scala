@@ -48,6 +48,20 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2))
     ),
+    testM("Correctly update the pre-fetched ref even if the building fiber was forked and joined")(
+      for {
+        prefetcherF <-
+          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer).fork
+        prefetcher          <- prefetcherF.join
+        immediatelyHeld     <- prefetcher.currentValueRef.get
+        _                   <- TestClock.adjust(100.millis)
+        initialSupplierCall <- prefetcher.currentValueRef.get
+        _                   <- TestClock.adjust(1.second)
+        secondSupplierCall  <- prefetcher.currentValueRef.get
+      } yield assert(immediatelyHeld)(equalTo(0)) &&
+        assert(initialSupplierCall)(equalTo(1)) &&
+        assert(secondSupplierCall)(equalTo(2))
+    ),
     testM("Correctly stream the updatesStream")(
       for {
         prefetcher <-

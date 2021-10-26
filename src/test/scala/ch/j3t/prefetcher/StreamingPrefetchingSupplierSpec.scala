@@ -59,6 +59,29 @@ object StreamingPrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(secondSupplierCall)(equalTo(2)) &&
         assert(derivedSecondCall)(equalTo(102))
     ),
+    testM("Correctly update the derived value even if the parent fiber terminates")(
+      for {
+        prefetcherF <-
+          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer).fork
+        prefetcher <- prefetcherF.join
+        derived    <- withDerived[Int, Int](prefetcher, i => i + 100, 666).provideCustomLayer(logLayer)
+        // Adjust the clock slightly so streams will be consumed
+        _                   <- TestClock.adjust(1.millis)
+        immediatelyHeld     <- prefetcher.get
+        immediatelyDerived  <- derived.get
+        _                   <- TestClock.adjust(99.millis)
+        initialSupplierCall <- prefetcher.get
+        derivedInitialCall  <- derived.get
+        _                   <- TestClock.adjust(1.second)
+        secondSupplierCall  <- prefetcher.get
+        derivedSecondCall   <- derived.get
+      } yield assert(immediatelyHeld)(equalTo(0)) &&
+        assert(immediatelyDerived)(equalTo(100)) &&
+        assert(initialSupplierCall)(equalTo(1)) &&
+        assert(derivedInitialCall)(equalTo(101)) &&
+        assert(secondSupplierCall)(equalTo(2)) &&
+        assert(derivedSecondCall)(equalTo(102))
+    ),
     testM("Correctly propagate the derived value to the updatesStream")(
       for {
         prefetcher <-

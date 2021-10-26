@@ -57,7 +57,8 @@ object StreamingPrefetchingSupplier {
    */
   def fromStream[T: Tag](
     initialValue: T,
-    supplyingStream: UStream[T]
+    supplyingStream: UStream[T],
+    prefetcherName: String = "default_name"
   ): ZIO[Clock with Logging with ZEnv, Nothing, StreamingPrefetchingSupplier[T]] =
     for {
       hub          <- Hub.sliding[T](PrefetchingSupplier.hubCapacity)
@@ -67,9 +68,11 @@ object StreamingPrefetchingSupplier {
       // if the stream fails or stops the prefetcher will stop
       updateFiber <-
         supplyingStream
-          .mapM(u => PrefetchingSupplier.updatePrefetchedValueRef(contentRef, lastOkUpdate, ZIO.succeed(u), hub))
+          .mapM(u =>
+            PrefetchingSupplier.updatePrefetchedValueRef(contentRef, lastOkUpdate, ZIO.succeed(u), hub, prefetcherName)
+          )
           .runDrain
-          .fork
+          .forkDaemon
     } yield new StreamingPrefetchingSupplier(
       contentRef,
       lastOkUpdate,
