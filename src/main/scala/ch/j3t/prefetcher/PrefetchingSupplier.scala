@@ -136,7 +136,8 @@ object PrefetchingSupplier {
     initialValue: T,
     supplier: ZIO[Has[T], Throwable, T],
     updateInterval: Duration,
-    initialWait: Duration = 0.seconds
+    initialWait: Duration = 0.seconds,
+    prefetcherName: String = "default_name"
   ) =
     for {
       hub                   <- Hub.sliding[T](hubCapacity)
@@ -148,8 +149,9 @@ object PrefetchingSupplier {
                        supplier,
                        updateInterval,
                        initialWait,
-                       hub
-                     ).fork
+                       hub,
+                       prefetcherName
+                     ).forkDaemon
     } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, hub, updateInterval, updateFiber)
 
   /**
@@ -162,7 +164,8 @@ object PrefetchingSupplier {
   def withInitialFetch[T: Tag](
     zero: T,
     supplier: ZIO[ZEnv with Has[T], Throwable, T],
-    updateInterval: Duration
+    updateInterval: Duration,
+    prefetcherName: String = "default_name"
   ) =
     for {
       hub                   <- Hub.sliding[T](hubCapacity)
@@ -174,18 +177,20 @@ object PrefetchingSupplier {
                        lastOkUpdate,
                        supplier,
                        updateInterval,
-                       hub
-                     ).fork
+                       hub,
+                       prefetcherName
+                     ).forkDaemon
     } yield new LivePrefetchingSupplier(refWithInitialContent, lastOkUpdate, hub, updateInterval, updateFiber)
 
   private[prefetcher] def updatePrefetchedValueRef[T: Tag](
     valueRef: Ref[T],
     successTimeRef: Ref[Instant],
     valueSupplier: ZIO[ZEnv with Has[T], Throwable, T],
-    hub: Hub[T]
+    hub: Hub[T],
+    prefetcherName: String
   ) =
     for {
-      _ <- log.info("Running supplier to updated pre-fetched value...")
+      _ <- log.info(s"Running supplier to update pre-fetched value for $prefetcherName...")
       // TODO we probably want to keep track of how much time goes by here
       previousVal <- valueRef.get
       newVal <- valueSupplier
@@ -209,12 +214,13 @@ object PrefetchingSupplier {
     supplier: ZIO[ZEnv with Has[T], Throwable, T],
     updateInterval: Duration,
     initialWait: Duration,
-    hub: Hub[T]
+    hub: Hub[T],
+    prefetcherName: String
   ) =
     // Sleep for the initial wait duration
     ZIO.sleep(initialWait) *>
       // Then attempt a refresh
-      updatePrefetchedValueRef(valueRef, successTimeRef, supplier, hub)
+      updatePrefetchedValueRef(valueRef, successTimeRef, supplier, hub, prefetcherName)
         // Retry at each interval until we succeed
         .retry(Schedule.spaced(updateInterval))
         // When we succeed, repeat at every interval
@@ -225,7 +231,8 @@ object PrefetchingSupplier {
     successTimeRef: Ref[Instant],
     supplier: ZIO[ZEnv with Has[T], Throwable, T],
     updateInterval: Duration,
-    hub: Hub[T]
+    hub: Hub[T],
+    prefetcherName: String
   ) =
     ZIO.sleep(updateInterval) *>
       scheduleUpdate(
@@ -234,7 +241,8 @@ object PrefetchingSupplier {
         supplier,
         updateInterval,
         Duration.Zero,
-        hub
+        hub,
+        prefetcherName
       )
 
   /**
@@ -319,7 +327,7 @@ object PrefetchingSupplier {
       _ <- millisSinceLastSuccessfulUpdate(pfs)
              .map(ms => elapsedTime = ms)
              .repeat(Schedule.spaced(1.second))
-             .fork
+             .forkDaemon
     } yield ()
   }
 

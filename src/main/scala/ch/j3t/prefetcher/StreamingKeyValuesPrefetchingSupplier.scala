@@ -84,7 +84,7 @@ object StreamingKeyValuesPrefetchingSupplier {
                          } yield update
                        }
                        .runDrain
-                       .fork
+                       .forkDaemon
     } yield new StreamingPrefetchingSupplier(
       contentRef,
       lastOkUpdate,
