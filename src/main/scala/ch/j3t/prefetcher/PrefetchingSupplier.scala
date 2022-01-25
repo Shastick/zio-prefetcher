@@ -1,13 +1,13 @@
 package ch.j3t.prefetcher
 
-import zio.duration.{ Duration, _ }
-import zio.logging._
 import zio._
-import zio.metrics.dropwizard._
+import zio.metrics.dropwizard.{ Meter, Registry, Timer }
 import zio.metrics.dropwizard.helpers._
-import java.time.Instant
 
+import java.time.Instant
 import zio.stream.ZStream
+
+import java.util.concurrent.TimeUnit
 
 /**
  * This class is akin to a Supplier[T] that will always have a T immediately available,
@@ -54,8 +54,6 @@ class LivePrefetchingSupplier[T] private[prefetcher] (
   val updateFiber: Fiber[Throwable, Any]
 ) extends PrefetchingSupplier[T] {
 
-  val currentValueRef = prefetchedValueRef.readOnly
-
   val get = prefetchedValueRef.get
 
   /**
@@ -80,7 +78,7 @@ class StaticPrefetchingSupplier[T] private[prefetcher] (
   val updateInterval: Duration
 ) extends PrefetchingSupplier[T] {
 
-  override def lastSuccessfulUpdate: IO[Nothing, Instant] = IO.succeed(Instant.now())
+  override def lastSuccessfulUpdate: IO[Nothing, Instant] = ZIO.succeed(Instant.now())
 
   def updatesStream: ZStream[Any, Nothing, T] =
     PrefetchingSupplier.setupUpdatesStream[T](hub, get)
@@ -99,7 +97,7 @@ object PrefetchingSupplier {
     at the moment of getting the stream we don't miss initial value of the prefetcher
    */
   def setupUpdatesStream[T](hub: Hub[T], currentVal: UIO[T]): ZStream[Any, Nothing, T] =
-    ZStream.fromEffect(currentVal) ++ ZStream.fromHub(hub)
+    ZStream.fromZIO(currentVal) ++ ZStream.fromHub(hub)
 
   /**
    * Build a static prefetcher (eg, a trivial supplier) from the passed value
@@ -107,7 +105,7 @@ object PrefetchingSupplier {
   def static[T](v: T): PrefetchingSupplier[T] =
     zio.Runtime.default.unsafeRun(for {
       hub <- Hub.sliding[T](hubCapacity)
-    } yield new StaticPrefetchingSupplier(hub, IO.succeed(v), Duration.Infinity))
+    } yield new StaticPrefetchingSupplier(hub, ZIO.succeed(v), Duration.Infinity))
 
   /**
    * Build a static prefetcher (eg, a trivial supplier) from the passed UIO
@@ -134,7 +132,7 @@ object PrefetchingSupplier {
    */
   def withInitialValue[T: Tag](
     initialValue: T,
-    supplier: ZIO[Has[T], Throwable, T],
+    supplier: ZIO[T, Throwable, T],
     updateInterval: Duration,
     initialWait: Duration = 0.seconds,
     prefetcherName: String = "default_name"
@@ -163,13 +161,13 @@ object PrefetchingSupplier {
    */
   def withInitialFetch[T: Tag](
     zero: T,
-    supplier: ZIO[ZEnv with Has[T], Throwable, T],
+    supplier: ZIO[ZEnv with T, Throwable, T],
     updateInterval: Duration,
     prefetcherName: String = "default_name"
-  ) =
+  ): ZIO[ZEnv with Clock, Throwable, LivePrefetchingSupplier[T]] =
     for {
       hub                   <- Hub.sliding[T](hubCapacity)
-      initialValue          <- supplier.provideCustomLayer(ZLayer.succeed(zero))
+      initialValue          <- supplier.provideSomeLayer[ZEnv with Clock](ZLayer.succeed(zero))
       refWithInitialContent <- Ref.make[T](initialValue)
       lastOkUpdate          <- Ref.make(Instant.now())
       updateFiber <- scheduleUpdateWithInitialDelay[T](
@@ -185,19 +183,19 @@ object PrefetchingSupplier {
   private[prefetcher] def updatePrefetchedValueRef[T: Tag](
     valueRef: Ref[T],
     successTimeRef: Ref[Instant],
-    valueSupplier: ZIO[ZEnv with Has[T], Throwable, T],
+    valueSupplier: ZIO[ZEnv with T, Throwable, T],
     hub: Hub[T],
     prefetcherName: String
-  ) =
+  ): ZIO[ZEnv, Throwable, Unit] =
     for {
-      _ <- log.info(s"Running supplier to update pre-fetched value for $prefetcherName...")
+      _ <- ZIO.logInfo(s"Running supplier to update pre-fetched value for $prefetcherName...")
       // TODO we probably want to keep track of how much time goes by here
       previousVal <- valueRef.get
       newVal <- valueSupplier
-                  .provideCustomLayer(ZLayer.succeed(previousVal))
+                  .provideSomeLayer[ZEnv with Clock](ZLayer.succeed(previousVal))
                   .onError(err =>
                     // Error output pretty ugly.
-                    log.error(
+                    ZIO.logError(
                       "Evaluation of the supplier failed, prefetched value not updated: " +
                         err.failureOption.map(_.getMessage).getOrElse("")
                     )
@@ -205,13 +203,13 @@ object PrefetchingSupplier {
       _ <- valueRef.set(newVal)
       _ <- successTimeRef.set(Instant.now())
       _ <- hub.publish(newVal)
-      _ <- log.debug("Successfully updated pre-fetched value.")
+      _ <- ZIO.logDebug("Successfully updated pre-fetched value.")
     } yield ()
 
   private def scheduleUpdate[T: Tag](
     valueRef: Ref[T],
     successTimeRef: Ref[Instant],
-    supplier: ZIO[ZEnv with Has[T], Throwable, T],
+    supplier: ZIO[ZEnv with T, Throwable, T],
     updateInterval: Duration,
     initialWait: Duration,
     hub: Hub[T],
@@ -229,7 +227,7 @@ object PrefetchingSupplier {
   private def scheduleUpdateWithInitialDelay[T: Tag](
     valueRef: Ref[T],
     successTimeRef: Ref[Instant],
-    supplier: ZIO[ZEnv with Has[T], Throwable, T],
+    supplier: ZIO[ZEnv with T, Throwable, T],
     updateInterval: Duration,
     hub: Hub[T],
     prefetcherName: String
@@ -253,21 +251,22 @@ object PrefetchingSupplier {
    */
   def monitoredWithInitialValue[T: Tag](
     initialValue: T,
-    supplier: ZIO[Has[T], Throwable, T],
+    supplier: ZIO[T, Throwable, T],
     updateInterval: Duration,
     prefetcherName: String,
     initialWait: Duration = 0.seconds
   ) =
     for {
       // Registry metrics and get the registry from the environment
-      (t, fm, registry) <- registerMetrics(prefetcherName)
+      trip             <- registerMetrics(prefetcherName)
+      (t, fm, registry) = trip
       // Rely on the traditional "non-registry aware" #withInitialValue()
       pfs <- withInitialValue(
                initialValue,
                // Wrap the passed supplier in another one that updates the metrics,
                // pass the registry so we can rely in #withInitialValue without making it
                // Registry aware
-               timedSupplier(supplier, t, fm).provideSomeLayer[Has[T]](registry),
+               timedSupplier(supplier, t, fm).provideSomeLayer[T](ZLayer.succeed(registry)),
                updateInterval,
                initialWait
              )
@@ -276,31 +275,32 @@ object PrefetchingSupplier {
 
   def monitoredWithInitialFetch[T: Tag](
     zero: T,
-    supplier: ZIO[ZEnv with Has[T], Throwable, T],
+    supplier: ZIO[ZEnv with T, Throwable, T],
     updateInterval: Duration,
     prefetcherName: String
   ) = for {
     // Registry metrics and get the registry from the environment
-    (t, fm, registry) <- registerMetrics(prefetcherName)
+    trip             <- registerMetrics(prefetcherName)
+    (t, fm, registry) = trip
     pfs <- withInitialFetch(
              zero,
              // Wrap the passed supplier in another one that updates the metrics,
              // pass the registry so we can rely in #withInitialValue
              // without making it Registry aware.
-             timedSupplier(supplier, t, fm).provideSomeLayer[Has[T] with ZEnv](registry),
+             timedSupplier(supplier, t, fm).provideSomeLayer[T with ZEnv](ZLayer.succeed(registry)),
              updateInterval
            )
     _ <- registerGauge(pfs, prefetcherName)
   } yield pfs
 
-  private def registerMetrics(prefetcherName: String) =
+  private def registerMetrics(prefetcherName: String): ZIO[Registry, Throwable, (Timer, Meter, Registry)] =
     for {
       // Register a timer
       t <- timer.register(prefetcherName, Array("refresh_timer"))
       // ... and a failures meter
       fm <- meter.register(prefetcherName, Array("failures"))
       // Read the registry from the environment for later direct usage.
-      registryFromEnv <- ZIO.access[Registry](_.get).map(ZLayer.succeed(_))
+      registryFromEnv <- ZIO.environment[Registry].map(r => r.get)
     } yield (t, fm, registryFromEnv)
 
   /**
@@ -332,6 +332,10 @@ object PrefetchingSupplier {
   }
 
   private def millisSinceLastSuccessfulUpdate[T](pfs: PrefetchingSupplier[T]) =
-    pfs.lastSuccessfulUpdate.map(t => System.currentTimeMillis() - t.toEpochMilli)
+    pfs.lastSuccessfulUpdate.flatMap(t =>
+      Clock
+        .currentTime(TimeUnit.MILLISECONDS)
+        .map(currentTimeMillis => currentTimeMillis - t.toEpochMilli)
+    )
 
 }

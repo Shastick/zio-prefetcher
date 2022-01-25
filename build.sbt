@@ -28,14 +28,13 @@ lazy val library =
   new {
 
     object Version {
-      val zio = "1.0.12"
+      val zio = "2.0.0-RC6"
     }
 
     val zio        = "dev.zio" %% "zio"          % Version.zio
     val zioStreams = "dev.zio" %% "zio-streams"  % Version.zio
-    val zioLogging = "dev.zio" %% "zio-logging"  % "0.5.8"
-    val zioMetrics = "dev.zio" %% "zio-metrics-dropwizard" % "1.0.8"
-    val metricsCore = "io.dropwizard.metrics" % "metrics-core" % "4.1.21"
+    val zioLogging = "dev.zio" %% "zio-logging"  % "2.0.0-RC10" // depends on ZIO rc6
+    val zioMetrics = "dev.zio" %% "zio-metrics-dropwizard" % "2.0.0-RC6" // depends on ZIO rc6
     val zioTest    = "dev.zio" %% "zio-test"     % Version.zio
     val zioTestSbt = "dev.zio" %% "zio-test-sbt" % Version.zio
   }

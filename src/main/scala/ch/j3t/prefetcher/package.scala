@@ -20,7 +20,7 @@ package object prefetcher {
       ZIO.fromOption(m.get(k)).mapError(_ => NotFound("Not found: " + k))
 
     def getAll(keys: Set[K]): Task[Map[K, V]] =
-      ZIO(
+      ZIO.succeed(
         keys.toSeq
           .flatMap(k => m.get(k).map(v => (k, v)))
           .toMap
