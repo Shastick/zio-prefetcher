@@ -1,14 +1,15 @@
 package ch.j3t.prefetcher
 
 import com.codahale.metrics.MetricRegistry
-import zio.{ Chunk, Has, ZIO, ZLayer }
+import zio.{Chunk, Has, ZIO, ZLayer}
 import zio.logging.Logging
-import zio.test.Assertion.{ endsWithString, equalTo }
+import zio.test.Assertion.{endsWithString, equalTo}
 import zio.test.environment.TestClock
-import zio.test.{ assert, DefaultRunnableSpec }
+import zio.test.{DefaultRunnableSpec, assert}
 import zio.duration._
 import zio.blocking._
 import zio.metrics.dropwizard._
+import zio.stream.ZStream
 
 object PrefetchingSupplierSpec extends DefaultRunnableSpec {
 
@@ -39,11 +40,11 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       for {
         prefetcher <-
           PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
-        immediatelyHeld     <- prefetcher.currentValueRef.get
+        immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(100.millis)
-        initialSupplierCall <- prefetcher.currentValueRef.get
+        initialSupplierCall <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
-        secondSupplierCall  <- prefetcher.currentValueRef.get
+        secondSupplierCall  <- prefetcher.get
       } yield assert(immediatelyHeld)(equalTo(0)) &&
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2))
@@ -53,11 +54,11 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         prefetcherF <-
           PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer).fork
         prefetcher          <- prefetcherF.join
-        immediatelyHeld     <- prefetcher.currentValueRef.get
+        immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(100.millis)
-        initialSupplierCall <- prefetcher.currentValueRef.get
+        initialSupplierCall <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
-        secondSupplierCall  <- prefetcher.currentValueRef.get
+        secondSupplierCall  <- prefetcher.get
       } yield assert(immediatelyHeld)(equalTo(0)) &&
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2))
@@ -131,13 +132,13 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         timer                   = mr.getTimers.entrySet().iterator().next().getValue
         failures                = mr.getMeters.entrySet().iterator().next().getValue
         beforeFirstRefresh      = timer.getCount
-        immediatelyHeld        <- prefetcher.currentValueRef.get
+        immediatelyHeld        <- prefetcher.get
         _                      <- TestClock.adjust(100.millis)
         afterFirstRefreshCount  = timer.getCount
-        initialSupplierCall    <- prefetcher.currentValueRef.get
+        initialSupplierCall    <- prefetcher.get
         _                      <- TestClock.adjust(1.second)
         afterSecondRefreshCount = timer.getCount
-        secondSupplierCall     <- prefetcher.currentValueRef.get
+        secondSupplierCall     <- prefetcher.get
         totalFailureCount       = failures.getCount
       } yield assert(gaugeName)(endsWithString("last_success_ms")) &&
         assert(beforeFirstRefresh)(equalTo(0L)) &&
@@ -155,11 +156,11 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         // First call to the effect is done within these 100 ms
         _ <- TestClock.adjust(100.millis)
         // The call has failed, thus we should still have the initial value here
-        initialSupplierCall <- prefetcher.currentValueRef.get
+        initialSupplierCall <- prefetcher.get
         // Wait for a second to pass...
         _ <- TestClock.adjust(1.second)
         // Now we should have the state of the counter, which is 1
-        secondSupplierCall <- prefetcher.currentValueRef.get
+        secondSupplierCall <- prefetcher.get
       } yield assert(initialSupplierCall)(equalTo(-42)) &&
         assert(secondSupplierCall)(equalTo(1))
     ),
@@ -173,12 +174,12 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         // First call to the effect is done within these 100 ms
         _ <- TestClock.adjust(100.millis)
         // The call has failed, thus we should still have the initial value here
-        initialSupplierCall <- prefetcher.currentValueRef.get
+        initialSupplierCall <- prefetcher.get
         failureCount         = failures.getCount
         // Wait for a second to pass...
         _ <- TestClock.adjust(1.second)
         // Now we should have the state of the counter, which is 1
-        secondSupplierCall <- prefetcher.currentValueRef.get
+        secondSupplierCall <- prefetcher.get
       } yield assert(initialSupplierCall)(equalTo(-42)) &&
         assert(secondSupplierCall)(equalTo(1)) &&
         assert(failureCount)(equalTo(1L))
@@ -187,11 +188,11 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       val incr = new Incr().supplier
       for {
         prefetcher          <- PrefetchingSupplier.withInitialValue(-42, incr, 1.second, 100.millis).provideCustomLayer(logLayer)
-        immediatelyHeld     <- prefetcher.currentValueRef.get
+        immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(100.millis)
-        initialSupplierCall <- prefetcher.currentValueRef.get
+        initialSupplierCall <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
-        secondSupplierCall  <- prefetcher.currentValueRef.get
+        secondSupplierCall  <- prefetcher.get
       } yield assert(immediatelyHeld)(equalTo(-42)) &&
         assert(initialSupplierCall)(equalTo(0)) &&
         assert(secondSupplierCall)(equalTo(1))
@@ -199,11 +200,11 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
     testM("Correctly do an initial fetch from a supplier")(
       for {
         prefetcher          <- PrefetchingSupplier.withInitialFetch(-42, incrementer, 1.second).provideCustomLayer(logLayer)
-        immediatelyHeld     <- prefetcher.currentValueRef.get
+        immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
-        initialSupplierCall <- prefetcher.currentValueRef.get
+        initialSupplierCall <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
-        secondSupplierCall  <- prefetcher.currentValueRef.get
+        secondSupplierCall  <- prefetcher.get
       } yield assert(immediatelyHeld)(equalTo(-41)) &&
         assert(initialSupplierCall)(equalTo(-40)) &&
         assert(secondSupplierCall)(equalTo(-39))
@@ -219,13 +220,13 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         timer                   = mr.getTimers.entrySet().iterator().next().getValue
         _                       = mr.getMeters.entrySet().iterator().next().getValue
         afterInitialFetchCount  = timer.getCount
-        immediatelyHeld        <- prefetcher.currentValueRef.get
+        immediatelyHeld        <- prefetcher.get
         _                      <- TestClock.adjust(1.second)
         afterFirstRefreshCount  = timer.getCount
-        initialSupplierCall    <- prefetcher.currentValueRef.get
+        initialSupplierCall    <- prefetcher.get
         _                      <- TestClock.adjust(1.second)
         afterSecondRefreshCount = timer.getCount
-        secondSupplierCall     <- prefetcher.currentValueRef.get
+        secondSupplierCall     <- prefetcher.get
       } yield assert(afterInitialFetchCount)(equalTo(1L)) &&
         assert(afterFirstRefreshCount)(equalTo(2L)) &&
         assert(afterSecondRefreshCount)(equalTo(3L)) &&
@@ -237,11 +238,11 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       val incr = new Incr().supplier
       for {
         prefetcher          <- PrefetchingSupplier.withInitialFetch(-42, incr, 1.second).provideCustomLayer(logLayer)
-        immediatelyHeld     <- prefetcher.currentValueRef.get
+        immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
-        initialSupplierCall <- prefetcher.currentValueRef.get
+        initialSupplierCall <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
-        secondSupplierCall  <- prefetcher.currentValueRef.get
+        secondSupplierCall  <- prefetcher.get
       } yield assert(immediatelyHeld)(equalTo(0)) &&
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2))
@@ -250,11 +251,11 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       val incr = new BlockingIncr().supplier
       for {
         prefetcher          <- PrefetchingSupplier.withInitialFetch(-42, incr, 1.second).provideCustomLayer(logLayer)
-        immediatelyHeld     <- prefetcher.currentValueRef.get
+        immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
-        initialSupplierCall <- prefetcher.currentValueRef.get
+        initialSupplierCall <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
-        secondSupplierCall  <- prefetcher.currentValueRef.get
+        secondSupplierCall  <- prefetcher.get
       } yield assert(immediatelyHeld)(equalTo(-41)) &&
         assert(initialSupplierCall)(equalTo(-40)) &&
         assert(secondSupplierCall)(equalTo(-39))
@@ -262,6 +263,8 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
   )
 
   private val incrementer = ZIO.fromFunction[Has[Int], Int](i => i.get + 1)
+
+  ZStream.empty.zipWithLatest()
 
   class Incr() {
     private var counter: Int = -1
