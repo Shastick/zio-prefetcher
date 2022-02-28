@@ -117,9 +117,9 @@ object StreamingPrefetchingSupplierSpec extends DefaultRunnableSpec {
 
       } yield assert(initialGet)(equalTo(42)) &&
         assert(getAfterSomeTime)(equalTo(42))
-    ),
+    )
   )
-  
+
   private def withDerived[T, M: Tag](
     ps: PrefetchingSupplier[T],
     transformation: T => M,

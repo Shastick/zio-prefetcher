@@ -1,15 +1,14 @@
 package ch.j3t.prefetcher
 
 import com.codahale.metrics.MetricRegistry
-import zio.{Chunk, Has, ZIO, ZLayer}
+import zio.{ Chunk, Has, ZIO, ZLayer }
 import zio.logging.Logging
-import zio.test.Assertion.{endsWithString, equalTo}
+import zio.test.Assertion.{ endsWithString, equalTo }
 import zio.test.environment.TestClock
-import zio.test.{DefaultRunnableSpec, assert}
+import zio.test.{ assert, DefaultRunnableSpec }
 import zio.duration._
 import zio.blocking._
 import zio.metrics.dropwizard._
-import zio.stream.ZStream
 
 object PrefetchingSupplierSpec extends DefaultRunnableSpec {
 
@@ -263,8 +262,6 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
   )
 
   private val incrementer = ZIO.fromFunction[Has[Int], Int](i => i.get + 1)
-
-  ZStream.empty.zipWithLatest()
 
   class Incr() {
     private var counter: Int = -1

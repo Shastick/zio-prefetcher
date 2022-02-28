@@ -20,7 +20,7 @@ See [mvnrepository.com for the latest version](https://mvnrepository.com/artifac
 
 ```sbt
 // https://mvnrepository.com/artifact/ch.j3t/zio-prefetcher
-libraryDependencies += "ch.j3t" %% "zio-prefetcher" % "0.6.0"
+libraryDependencies += "ch.j3t" %% "zio-prefetcher" % "0.7.0"
 ```
 
 All dependencies need to be provided (`zio`, `zio-streams`, `zio-logging`). Additionally, if you intend to rely on the pre-fetchers that expose metrics, you'll also need to provide `zio-metrics-dropwizard`.
