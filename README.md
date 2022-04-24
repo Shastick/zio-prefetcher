@@ -163,3 +163,7 @@ Making a pure ZIO prefetcher seemed like a nice little challenge.
 
 This is ~~some toy-code that will see some production use~~ actually being used in production but is, 
 nevertheless, written by a relative ZIO-Newbie: please use it at your own risks.
+
+## Contributors
+
+Many thanks to [Natalia Juszka](https://github.com/meluru) for adding the reactive/streaming pre-fetcher.
