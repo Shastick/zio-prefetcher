@@ -1,44 +1,40 @@
 package ch.j3t.prefetcher
 
 import com.codahale.metrics.MetricRegistry
-import zio.{ Chunk, Has, ZIO, ZLayer }
-import zio.logging.Logging
+import zio.{ Chunk, ZIO, ZLayer }
 import zio.test.Assertion.{ endsWithString, equalTo }
-import zio.test.environment.TestClock
-import zio.test.{ assert, DefaultRunnableSpec }
-import zio.duration._
-import zio.blocking._
+import zio.test.{ assert, liveEnvironment, TestClock, ZIOSpecDefault }
 import zio.metrics.dropwizard._
+import zio._
+import zio.ZIO.attemptBlocking
+import zio.logging.LogFormat
 
-object PrefetchingSupplierSpec extends DefaultRunnableSpec {
+object PrefetchingSupplierSpec extends ZIOSpecDefault {
 
-  val logLayer = Logging.console(
-    format = (_, logEntry) => logEntry
-  ) >>> Logging.withRootLoggerName("test-logger")
+  val logger = LogFormat.default.toLogger
 
   def withNewRegistryLayer =
-    ZIO.effectTotal(new MetricRegistry()).map { mr =>
-      (mr, (ZLayer.succeed[Option[MetricRegistry]](Some(mr)) >>> Registry.explicit) ++ logLayer)
+    ZIO.succeed(new MetricRegistry()).map { mr =>
+      (mr, (ZLayer.succeed[Option[MetricRegistry]](Some(mr)) >>> Registry.explicit))
     }
 
   def spec = suite("PrefetchingSupplierSpec")(
-    testM("The dirty counter-incrementing effect works as expected") {
+    test("The dirty counter-incrementing effect works as expected") {
       val incr = new Incr().supplier
       for {
         v1 <- incr
         v2 <- incr
       } yield assert(v1)(equalTo(0)) && assert(v2)(equalTo(1))
     },
-    testM("The clean counter-incrementing effect works as expected")(
+    test("The clean counter-incrementing effect works as expected")(
       for {
-        v1 <- incrementer.provide(Has(-1))
-        v2 <- incrementer.provide(Has(v1))
+        v1 <- incrementer.provide(ZLayer.succeed(-1))
+        v2 <- incrementer.provide(ZLayer.succeed(v1))
       } yield assert(v1)(equalTo(0)) && assert(v2)(equalTo(1))
     ),
-    testM("Correctly update the pre-fetched ref")(
+    test("Correctly update the pre-fetched ref")(
       for {
-        prefetcher <-
-          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
+        prefetcher          <- PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis)
         immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(100.millis)
         initialSupplierCall <- prefetcher.get
@@ -48,10 +44,9 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2))
     ),
-    testM("Correctly update the pre-fetched ref even if the building fiber was forked and joined")(
+    test("Correctly update the pre-fetched ref even if the building fiber was forked and joined")(
       for {
-        prefetcherF <-
-          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer).fork
+        prefetcherF         <- PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).fork
         prefetcher          <- prefetcherF.join
         immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(100.millis)
@@ -62,20 +57,18 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2))
     ),
-    testM("Correctly stream the updatesStream")(
+    test("Correctly stream the updatesStream")(
       for {
-        prefetcher <-
-          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
-        stream     = prefetcher.updatesStream
-        fiber     <- stream.take(4).runCollect.fork
-        _         <- TestClock.adjust(3.second)
-        collected <- fiber.join
+        prefetcher <- PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis)
+        stream      = prefetcher.updatesStream
+        fiber      <- stream.take(4).runCollect.fork
+        _          <- TestClock.adjust(3.second)
+        collected  <- fiber.join
       } yield assert(collected)(equalTo(Chunk(0, 1, 2, 3)))
     ),
-    testM("Correctly allow to subscribe more than one stream")(
+    test("Correctly allow to subscribe more than one stream")(
       for {
-        prefetcher <-
-          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
+        prefetcher      <- PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis)
         firstStream      = prefetcher.updatesStream
         secondStream     = prefetcher.updatesStream
         firstFiber      <- firstStream.take(3).runCollect.fork
@@ -86,21 +79,19 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       } yield assert(firstCollected)(equalTo(Chunk(0, 1, 2))) &&
         assert(firstCollected)(equalTo(secondCollected))
     ),
-    testM("Correctly get the later value if we subscribe later")(
+    test("Correctly get the later value if we subscribe later")(
       for {
-        prefetcher <-
-          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
-        _         <- TestClock.adjust(110.millis)
-        stream     = prefetcher.updatesStream
-        fiber     <- stream.take(1).runCollect.fork
-        _         <- TestClock.adjust(1.second)
-        collected <- fiber.join
+        prefetcher <- PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis)
+        _          <- TestClock.adjust(110.millis)
+        stream      = prefetcher.updatesStream
+        fiber      <- stream.take(1).runCollect.fork
+        _          <- TestClock.adjust(1.second)
+        collected  <- fiber.join
       } yield assert(collected)(equalTo(Chunk(1)))
     ),
-    testM("Correctly stream values for two streams subscribed at different time")(
+    test("Correctly stream values for two streams subscribed at different time")(
       for {
-        prefetcher <-
-          PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis).provideCustomLayer(logLayer)
+        prefetcher      <- PrefetchingSupplier.withInitialValue(0, incrementer, 1.second, 100.millis)
         _               <- TestClock.adjust(1.millis)
         firstStream      = prefetcher.updatesStream
         secondStream     = prefetcher.updatesStream
@@ -114,9 +105,10 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       } yield assert(firstCollected)(equalTo(Chunk(1, 2, 3))) &&
         assert(secondCollected)(equalTo(Chunk(2, 3, 4)))
     ),
-    testM("Correctly update the pre-fetched ref and update metrics")(
+    test("Correctly update the pre-fetched ref and update metrics")(
       for {
-        (mr, mrLayer) <- withNewRegistryLayer
+        tup          <- withNewRegistryLayer
+        (mr, mrLayer) = tup
         prefetcher <- PrefetchingSupplier
                         .monitoredWithInitialValue(
                           0,
@@ -125,7 +117,7 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
                           "test_prefetcher",
                           100.millis
                         )
-                        .provideCustomLayer(mrLayer)
+                        .provideSomeLayer[ZEnv](mrLayer)
         // Implicitly checks that we indeed have instantiated metrics...
         gaugeName               = mr.getGauges.entrySet().iterator().next().getKey
         timer                   = mr.getTimers.entrySet().iterator().next().getValue
@@ -148,10 +140,9 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(secondSupplierCall)(equalTo(2)) &&
         assert(totalFailureCount)(equalTo(0L))
     ),
-    testM("Correctly deal with supplier errors")(
+    test("Correctly deal with supplier errors")(
       for {
-        prefetcher <-
-          PrefetchingSupplier.withInitialValue(-42, new FailingIncr().failEvery2, 1.second).provideCustomLayer(logLayer)
+        prefetcher <- PrefetchingSupplier.withInitialValue(-42, new FailingIncr().failEvery2, 1.second)
         // First call to the effect is done within these 100 ms
         _ <- TestClock.adjust(100.millis)
         // The call has failed, thus we should still have the initial value here
@@ -163,12 +154,13 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
       } yield assert(initialSupplierCall)(equalTo(-42)) &&
         assert(secondSupplierCall)(equalTo(1))
     ),
-    testM("Correctly deal with supplier errors and update metrics accordingly")(
+    test("Correctly deal with supplier errors and update metrics accordingly")(
       for {
-        (mr, mrLayer) <- withNewRegistryLayer
+        tup          <- withNewRegistryLayer
+        (mr, mrLayer) = tup
         prefetcher <- PrefetchingSupplier
                         .monitoredWithInitialValue(-42, new FailingIncr().failEvery2, 1.second, "test_prefetcher")
-                        .provideCustomLayer(mrLayer)
+                        .provideSomeLayer[ZEnv](mrLayer)
         failures = mr.getMeters.entrySet().iterator().next().getValue
         // First call to the effect is done within these 100 ms
         _ <- TestClock.adjust(100.millis)
@@ -183,10 +175,10 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(secondSupplierCall)(equalTo(1)) &&
         assert(failureCount)(equalTo(1L))
     ),
-    testM("Correctly work with a supplier that ignores the previous value") {
+    test("Correctly work with a supplier that ignores the previous value") {
       val incr = new Incr().supplier
       for {
-        prefetcher          <- PrefetchingSupplier.withInitialValue(-42, incr, 1.second, 100.millis).provideCustomLayer(logLayer)
+        prefetcher          <- PrefetchingSupplier.withInitialValue(-42, incr, 1.second, 100.millis)
         immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(100.millis)
         initialSupplierCall <- prefetcher.get
@@ -196,9 +188,9 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(initialSupplierCall)(equalTo(0)) &&
         assert(secondSupplierCall)(equalTo(1))
     },
-    testM("Correctly do an initial fetch from a supplier")(
+    test("Correctly do an initial fetch from a supplier")(
       for {
-        prefetcher          <- PrefetchingSupplier.withInitialFetch(-42, incrementer, 1.second).provideCustomLayer(logLayer)
+        prefetcher          <- PrefetchingSupplier.withInitialFetch(-42, incrementer, 1.second)
         immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
         initialSupplierCall <- prefetcher.get
@@ -208,12 +200,13 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(initialSupplierCall)(equalTo(-40)) &&
         assert(secondSupplierCall)(equalTo(-39))
     ),
-    testM("Correctly do an initial fetch from a supplier and expose metrics properly")(
+    test("Correctly do an initial fetch from a supplier and expose metrics properly")(
       for {
-        (mr, mrLayer) <- withNewRegistryLayer
+        tup          <- withNewRegistryLayer
+        (mr, mrLayer) = tup
         prefetcher <- PrefetchingSupplier
                         .monitoredWithInitialFetch(-42, incrementer, 1.second, "test_prefetcher")
-                        .provideCustomLayer(mrLayer)
+                        .provideSomeLayer[ZEnv](mrLayer)
         // Implicitly checks that we indeed have instantiated metrics...
         _                       = mr.getGauges.entrySet().iterator().next().getKey
         timer                   = mr.getTimers.entrySet().iterator().next().getValue
@@ -233,10 +226,10 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(initialSupplierCall)(equalTo(-40)) &&
         assert(secondSupplierCall)(equalTo(-39))
     ),
-    testM("Correctly do an initial fetch from a supplier that ignores the previous value") {
+    test("Correctly do an initial fetch from a supplier that ignores the previous value") {
       val incr = new Incr().supplier
       for {
-        prefetcher          <- PrefetchingSupplier.withInitialFetch(-42, incr, 1.second).provideCustomLayer(logLayer)
+        prefetcher          <- PrefetchingSupplier.withInitialFetch(-42, incr, 1.second)
         immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
         initialSupplierCall <- prefetcher.get
@@ -246,10 +239,10 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(initialSupplierCall)(equalTo(1)) &&
         assert(secondSupplierCall)(equalTo(2))
     },
-    testM("Correctly work from a supplier that relies on the ZEnv") {
+    test("Correctly work from a supplier that relies on the ZEnv") {
       val incr = new BlockingIncr().supplier
       for {
-        prefetcher          <- PrefetchingSupplier.withInitialFetch(-42, incr, 1.second).provideCustomLayer(logLayer)
+        prefetcher          <- PrefetchingSupplier.withInitialFetch(-42, incr, 1.second)
         immediatelyHeld     <- prefetcher.get
         _                   <- TestClock.adjust(1.second)
         initialSupplierCall <- prefetcher.get
@@ -259,14 +252,14 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
         assert(initialSupplierCall)(equalTo(-40)) &&
         assert(secondSupplierCall)(equalTo(-39))
     }
-  )
+  ).provide(liveEnvironment)
 
-  private val incrementer = ZIO.fromFunction[Has[Int], Int](i => i.get + 1)
+  private val incrementer = ZIO.environmentWith[Int](i => i.get + 1)
 
   class Incr() {
     private var counter: Int = -1
 
-    val supplier = ZIO.effect {
+    val supplier = ZIO.attempt {
       counter += 1
       counter
     }
@@ -274,17 +267,17 @@ object PrefetchingSupplierSpec extends DefaultRunnableSpec {
 
   class BlockingIncr() {
 
-    val supplier: ZIO[Blocking with Has[Int], Throwable, Int] =
+    val supplier: ZIO[Any with Int, Throwable, Int] =
       for {
-        prev <- ZIO.access[Has[Int]](_.get)
-        next <- effectBlocking(prev + 1)
+        prev <- ZIO.environment[Int]
+        next <- attemptBlocking(prev.get + 1)
       } yield next
   }
 
   class FailingIncr() {
     private var counter: Int = -1
 
-    val failEvery2 = ZIO.effect {
+    val failEvery2 = ZIO.attempt {
       counter += 1
       if (counter % 2 == 0) {
         ZIO.fail(new Exception("Darn"))

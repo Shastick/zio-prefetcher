@@ -1,10 +1,8 @@
 package ch.j3t.prefetcher
 
-import zio.clock._
-import zio.duration.{ durationInt, Duration }
-import zio.logging.Logging
+import zio.Clock.instant
 import zio.stream.{ UStream, ZStream }
-import zio.{ Fiber, Hub, IO, Ref, Tag, ZEnv, ZIO }
+import zio.{ durationInt, Clock, Duration, Fiber, Hub, IO, Ref, Tag, ZEnv, ZIO }
 
 import java.time.Instant
 
@@ -24,8 +22,6 @@ object StreamingPrefetchingSupplier {
     hub: Hub[T],
     val streamConsumptionFiber: Fiber[Throwable, Any]
   ) extends PrefetchingSupplier[T] {
-
-    val currentValueRef = prefetchedValueRef.readOnly
 
     val get = prefetchedValueRef.get
 
@@ -59,7 +55,7 @@ object StreamingPrefetchingSupplier {
     initialValue: T,
     supplyingStream: UStream[T],
     prefetcherName: String = "default_name"
-  ): ZIO[Clock with Logging with ZEnv, Nothing, StreamingPrefetchingSupplier[T]] =
+  ): ZIO[Clock with ZEnv, Nothing, StreamingPrefetchingSupplier[T]] =
     for {
       hub          <- Hub.sliding[T](PrefetchingSupplier.hubCapacity)
       contentRef   <- Ref.make(initialValue)
@@ -68,7 +64,7 @@ object StreamingPrefetchingSupplier {
       // if the stream fails or stops the prefetcher will stop
       updateFiber <-
         supplyingStream
-          .mapM(u =>
+          .mapZIO(u =>
             PrefetchingSupplier.updatePrefetchedValueRef(contentRef, lastOkUpdate, ZIO.succeed(u), hub, prefetcherName)
           )
           .runDrain

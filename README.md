@@ -9,38 +9,23 @@ RAM is cheap. Caches can behave in unpredictable ways. Thus:
 A prefetcher is something that will do some work _in advance_ of when it is needed, while keeping the result around until it is eventually useful.
 
 Hence, the time it takes to access pre-fetched things is entirely predictable. Think of a prefetcher as a `Supplier[T]` 
-that returns a `T` immediately while regularly refreshing itself in the background  
+that returns a `T` immediately while regulary refreshing itself in the background  
 
 Note that it is _slightly_ different from a cache. Please refer to [this blog post](https://j3t.ch/tech/prefetching-pattern/) for some further context.
 
 
 ## How To Use
 
-See [mvnrepository.com for the latest version](https://mvnrepository.com/artifact/ch.j3t/zio-prefetcher)
-
-```sbt
-// https://mvnrepository.com/artifact/ch.j3t/zio-prefetcher
-libraryDependencies += "ch.j3t" %% "zio-prefetcher" % "0.7.0"
-```
-
-All dependencies need to be provided (`zio`, `zio-streams`, `zio-logging`). Additionally, if you intend to rely on the pre-fetchers that expose metrics, you'll also need to provide `zio-metrics-dropwizard`.
-
-### Simple Case
-
-The example below shows how to load the output of a supplier into memory and periodically refresh it: 
-
 ```scala
 
-// Some Map you'd like to have around for quick lookups
 type PrefetchedVal = Map[UserId, UserSettings]
 
-// Something that computes the map too slowly for your taste
-val supplier: ZIO[PrefetchedVal, Throwable, PrefetchedVal] = ???
+val supplier(): ZIO[PrefetchedVal, Throwable, PrefetchedVal] = ...
 
 for {
   prefetcher <- PrefetchingSupplier.withInitialValue(initialValue = Map(), supplier = supplier(), updateInterval = 1.second)
   ...
-  instantAccess <- prefetcher.get
+  instantAccess <- prefetcher.currentValueRef.get
   settings = instantAccess(someUserId)
   ...
 } yield ...
@@ -48,71 +33,19 @@ for {
 
 ```
 
-### From A Stream
-
-This example is similar to the previous one. Here the value held by the pre-fetcher is the last 
-one that was emitted by the passed stream.
-
-```scala
-
-// Some Map you'd like to have around for quick lookups
-type PrefetchedVal = Map[UserId, UserSettings]
-
-// A stream that occasionally emits the current version of the Map, which we want to keep around in memory:
-val supplyingStream: UStream[PrefetchedVal] = ???
-
-for {
-  prefetcher <- StreamingPrefetchingSupplier.fromStream(initialValue, supplyingStream)
-  ...
-  instantAccess <- prefetcher.get
-  settings = instantAccess(someUserId)
-  ...
-} yield ...
-
+The artifact coordinates are:
 
 ```
-
-### Combining Pre-Fetchers
-
-The true foot-gun potential of this library gets entirely obvious once you start combining pre-fetchers together,
-thanks to `ZStream`'s `zipWithLatest` and the prefetcher's own `updatesStream` that lets you subscribe to prefetcher updates:
-
-```scala
-
-// Some Map you'd like to have around for quick lookups,
-// but which requires looking up two different and slow data sources
-type CombinedType = Map[UserId, UserSettings]
-
-// Prefetchers for the two data-sources.
-// These can have very different refresh intervals
-val pfA: PrefetchingSupplier[SomeType] = ???
-val pfB: PrefetchingSupplier[AnotherType] = ???
-
-// Defines how to combine the values from each data source
-def combinePrefetchedValues(some: SomeType, another: AnotherType): CombinedType = ???
-
-// Build a stream of the combined type
-val combinedUpdateStream: UStream[CombinedType] = 
-  pfA.updatesStream.zipWithLatest(pfB.updatesStream)
-    .map{case (some, another) => combinePrefetchedValues(some, another)}
-
-for {
-  // Pipe the stream into a pre-fetcher
-  prefetcher <- StreamingPrefetchingSupplier.fromStream(initialValue, combinedUpdateStream)
-  ...
-  instantAccess <- prefetcher.get
-  settings = instantAccess(someUserId)
-  ...
-} yield ...
+libraryDependencies += "ch.j3t" %% "zio-prefetcher" % version
 ```
 
-### About Initial Values
+[Check over here for all available versions](https://mvnrepository.com/artifact/ch.j3t/zio-prefetcher)
 
-The examples show how to provide an initial value, to be used by the pre-fetcher while the first _real_ value is being computed.
+This library is built against `zio` version `1.0.7` and `zio-logging` version `0.5.8` but expects you to provide `zio` and `zio-logging` at runtime.
 
-An alternative is available to synchronously wait for the first value to have been computed, eg: `PrefetchingSupplier.withInitialFetch`
+Additionally, if you intend to rely on the pre-fetchers that expose metrics, you'll need to provide `zio-metrics-dropwizard`.
 
-## Sample Use Cases
+## Example use cases
 
 Assume a service with some users and their associated settings saved somewhere in a storage engine. 
 Occasionally, these settings may change, but it's OK if updates don't propagate immediately.
@@ -124,7 +57,7 @@ Your constraints may be such that looking up some settings in the backend takes 
 Assuming you have some spare RAM, you can set up a prefetcher such that you'll always have a `Map[UserId, UserSettings]`
 sitting around, ready to be used. Now you can access all existing settings with a direct map lookup at any time.
 
-# Considerations
+# Consideration
 
 ## When to use a pre-fetcher
 
@@ -142,17 +75,17 @@ And assuming that everything you generally need fits in RAM...
 For cases that match all the above, it can be interesting to rely on pre-fetched data instead of looking things up
 through an external service, be it with or without some caching involved.
 
-## What does this solve that a cache does not?
+## What does this solve that a cache cannot?
 
 Caches are great, no questions here.
 
 The issue with a cache, in general, is that on a cache miss, the caller still needs to wait.  
 
 Having a cache that pre-loads all possible queries or arguments to a function or service, while pro-actively refreshing 
-the cached values if required, could solve that problem.
+the cached values if required, would solve for that problem.
 
-In such situations, a pre-fetcher might still be easier to reason about: the values it contains can be guaranteed to be internally consistent.
-This might be harder to achieve with a traditional cache.
+However, if you do so, you essentially end up with a _prefetcher_, not using the other cache features like eviction policies: 
+This pre-fetcher is intended for use in exactly such cases.  
 
 ## How it came to be
 
@@ -162,8 +95,4 @@ Making a pure ZIO prefetcher seemed like a nice little challenge.
 ## Disclaimer
 
 This is ~~some toy-code that will see some production use~~ actually being used in production but is, 
-nevertheless, written by a relative ZIO-Newbie: please use it at your own risks.
-
-## Contributors
-
-Many thanks to [Natalia Juszka](https://github.com/meluru) for adding the reactive/streaming pre-fetcher.
+nevertheless, written by a relative ZIO-Newbie: so use it at your own risks.
